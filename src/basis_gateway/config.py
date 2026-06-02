@@ -33,6 +33,14 @@ class GatewayConfig(BaseSettings):
     log_level: str = Field(default="INFO")
     environment: Literal["local", "development", "staging", "production"] = Field(default="local")
 
+    # OIDC / JWT configuration.
+    # Optional in Phase 2: absence does not break /health or the service skeleton.
+    # Phase 3 will require OIDC_ISSUER when /v1/evaluate is wired in.
+    oidc_issuer: str | None = Field(default=None, alias="OIDC_ISSUER")
+    oidc_audience: str | None = Field(default=None, alias="OIDC_AUDIENCE")
+    oidc_jwks_uri: str | None = Field(default=None, alias="OIDC_JWKS_URI")
+    jwks_cache_ttl_seconds: float = Field(default=300.0, alias="JWKS_CACHE_TTL_SECONDS", gt=0)
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
