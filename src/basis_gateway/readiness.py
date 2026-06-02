@@ -1,7 +1,13 @@
 """Readiness state for basis-gateway.
 
-Tracks whether the application is ready to serve requests.
-Set to ready after successful startup; cleared on shutdown.
+Tracks whether the application and its required components are ready to
+serve requests. Components are registered by name; all registered
+components must be ready for the overall state to be ready.
+
+Phase 3 components tracked:
+  - "app"       — startup config and basic initialization
+  - "evaluator" — EnforcementPoint initialized
+  - "oidc"      — OIDC verifier initialized (optional in local-dev mode)
 """
 
 from __future__ import annotations
@@ -12,31 +18,42 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ReadinessState:
-    """Thread-safe container for gateway readiness."""
+    """Thread-safe multi-component readiness tracker."""
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-    _ready: bool = field(default=False)
-    _reason: str = field(default="application not initialized")
+    _components: dict[str, bool] = field(default_factory=dict)
+    _reasons: dict[str, str] = field(default_factory=dict)
 
-    def mark_ready(self) -> None:
+    def mark_ready(self, component: str = "app") -> None:
         with self._lock:
-            self._ready = True
-            self._reason = ""
+            self._components[component] = True
+            self._reasons.pop(component, None)
 
-    def mark_not_ready(self, reason: str = "application not initialized") -> None:
+    def mark_not_ready(
+        self,
+        reason: str = "application not initialized",
+        component: str = "app",
+    ) -> None:
         with self._lock:
-            self._ready = False
-            self._reason = reason
+            self._components[component] = False
+            self._reasons[component] = reason
 
     @property
     def is_ready(self) -> bool:
+        """True only when all registered components are ready."""
         with self._lock:
-            return self._ready
+            if not self._components:
+                return False
+            return all(self._components.values())
 
     @property
     def reason(self) -> str:
+        """Human-readable reason string for the first not-ready component."""
         with self._lock:
-            return self._reason
+            for component, ready in self._components.items():
+                if not ready:
+                    return self._reasons.get(component, f"{component} not ready")
+            return ""
 
 
 # Module-level singleton shared by the FastAPI app and tests.
@@ -44,10 +61,11 @@ _state = ReadinessState()
 
 
 def get_readiness_state() -> ReadinessState:
-    """Return the module-level readiness state."""
     return _state
 
 
 def reset_readiness_state() -> None:
-    """Reset module-level state to not-ready. Intended for use in tests only."""
-    _state.mark_not_ready()
+    """Reset to a clean not-ready state. For tests only."""
+    with _state._lock:
+        _state._components.clear()
+        _state._reasons.clear()

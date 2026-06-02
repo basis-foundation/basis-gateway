@@ -22,22 +22,58 @@ This is a private implementation repository. The service is not production-ready
 - OIDC config fields added: `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URI`, `JWKS_CACHE_TTL_SECONDS`
 - 49 new tests (67 total); local generated RSA keys, mock JWKS server — **no live IdP required**
 
-### Not yet implemented
-- `POST /v1/evaluate` — authorization endpoint (Phase 3)
-- `basis-core` `EnforcementPoint` integration (Phase 3)
-- Audit writer (Phase 3)
+### Phase 3 — basis-core integration and `/v1/evaluate` ✓
+- `POST /v1/evaluate` — full authorization lifecycle; subject from JWT, not request body
+- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`; demo RBAC policy for v0.1
+- `src/basis_gateway/audit/writer.py` — `GatewayAuditWriter` delegating to `LogAuditWriter`; write failures logged, never propagated
+- `basis-core` integrated as package dependency; `EnforcementPoint` initialized at lifespan startup
+- 35 new tests (102 total): evaluate, fail-closed, audit
+
+### Still out of scope
+- Production policy loading (v0.1 uses a demo `RolePolicyRule`)
+- Persistent audit storage beyond log output
+- `POST /v1/batch/evaluate`
+- mTLS, rate limiting, admin API
 
 ## What this repository currently contains
 
-Phases 1 and 2 are complete. The service has a runnable FastAPI foundation, strict OIDC token verification, and deterministic subject normalization. `POST /v1/evaluate` and `basis-core` integration are Phase 3.
+Phases 1–3 are complete. The service starts, authenticates callers via OIDC JWT, normalizes identity, evaluates authorization requests against `basis-core`, and returns enforced decisions with audit emission.
 
-- `src/basis_gateway/` — Python package with FastAPI app, config, readiness, auth, subject mapper
-- `GET /health` — liveness probe; returns `{"status": "ok", "service": "basis-gateway"}`
-- `GET /ready` — readiness probe; returns `200` after startup, `503` if not ready
-- `src/basis_gateway/auth/oidc.py` — OIDC verifier (discovery, JWKS cache, JWT verification)
-- `src/basis_gateway/auth/subject_mapper.py` — claim-to-subject normalization
-- `tests/` — 67 tests; no live IdP required
+- `GET /health` — liveness probe; always 200 when the process is running
+- `GET /ready` — readiness probe; 200 when config + evaluator are initialized
+- `POST /v1/evaluate` — authorization evaluation (see usage below)
+- `src/basis_gateway/auth/` — OIDC verifier, subject mapper, error types
+- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`
+- `src/basis_gateway/audit/writer.py` — `GatewayAuditWriter`
+- `tests/` — 102 tests; no live IdP required
 - `pyproject.toml` — project config, ruff, mypy (strict), pytest
+
+---
+
+## POST /v1/evaluate
+
+Requires a valid Bearer token in the `Authorization` header. Subject identity is derived from the token — do not provide `subject_id` or `subject_roles` in the body.
+
+```bash
+curl -X POST http://localhost:8000/v1/evaluate \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "read:sensor:telemetry",
+    "resource_id": "sensor:ahu-1"
+  }'
+```
+
+**Response (ALLOW):**
+```json
+{"request_id": "...", "outcome": "allow", "reason": "...", "policy_version": null}
+```
+
+**Response (DENY or NOT_APPLICABLE):** HTTP 403 with `"outcome": "deny"` or `"outcome": "not_applicable"`.
+
+The `X-Correlation-ID` header is always present in the response.
+
+**v0.1 policy note:** The service uses a built-in demo `RolePolicyRule`. Roles come from the `realm_access.roles` or `roles` JWT claim. This is a temporary placeholder — a real policy configuration mechanism is planned for a future phase.
 
 ---
 
@@ -45,9 +81,7 @@ Phases 1 and 2 are complete. The service has a runnable FastAPI foundation, stri
 
 The following will be added in later phases:
 
-- `basis-core` `EnforcementPoint` integration (`core/evaluator.py`) — Phase 3
-- `POST /v1/evaluate` authorization endpoint — Phase 3
-- Audit writer implementation — Phase 3
+- Production policy loading (demo RBAC rule only in v0.1)
 - Docker, docker-compose, Kubernetes manifests
 - GitHub Actions or CI configuration
 - Protocol adapters
@@ -81,10 +115,11 @@ The service starts on `http://localhost:8000` by default. Environment variables:
 | `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `ENVIRONMENT` | `local` | Deployment environment (`local`, `development`, `staging`, `production`) |
 | `SERVICE_NAME` | `basis-gateway` | Service identifier in health/ready responses |
-| `OIDC_ISSUER` | _(none)_ | Token issuer URL; used for discovery and `iss` validation. Required in Phase 3. |
+| `OIDC_ISSUER` | _(none)_ | Token issuer URL; used for discovery and `iss` validation. Without this, `/v1/evaluate` rejects all requests. |
 | `OIDC_AUDIENCE` | _(none)_ | Expected `aud` claim. If unset, audience is not validated. |
 | `OIDC_JWKS_URI` | _(none)_ | Override JWKS endpoint; skips OIDC discovery when set. |
 | `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
+| `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
 
 ---
 
@@ -138,11 +173,11 @@ basis-core     (evaluates; returns DecisionResponse)
 
 ## Next implementation phase
 
-**Phase 3: basis-core integration and evaluate endpoint**
+**Phase 4: production hardening**
 
-1. Add `core/evaluator.py` — initialize `EnforcementPoint` during lifespan, wrap `evaluate()` call
-2. Add `audit/writer.py` — `AuditWriter` implementation (initially `LogAuditWriter`)
-3. Add `POST /v1/evaluate` — full request lifecycle: auth → normalize → evaluate → enforce → audit
-4. Add `test_evaluate.py` and `test_fail_closed.py`
-5. Wire OIDC verifier into the request path; require `OIDC_ISSUER` at startup
-6. Update `/ready` to check JWKS reachability and `EnforcementPoint` initialization
+1. Policy configuration mechanism — replace the v0.1 demo `RolePolicyRule` with a real policy loading path (file-based, env-driven, or configurable)
+2. `OIDC_ISSUER` required at startup when `POST /v1/evaluate` is active (currently optional; service degrades gracefully)
+3. `/ready` OIDC component — check JWKS reachability as a readiness condition
+4. Observability — structured logging with request/correlation IDs, metrics hooks for audit failure count and evaluation latency
+5. `POST /v1/batch/evaluate` — batch evaluation endpoint (out of scope for v0.1)
+6. Subject type inference — use claim-based heuristics to populate `SubjectType` beyond `HUMAN`

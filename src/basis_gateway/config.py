@@ -41,6 +41,9 @@ class GatewayConfig(BaseSettings):
     oidc_jwks_uri: str | None = Field(default=None, alias="OIDC_JWKS_URI")
     jwks_cache_ttl_seconds: float = Field(default=300.0, alias="JWKS_CACHE_TTL_SECONDS", gt=0)
 
+    # Policy configuration.
+    policy_version: str | None = Field(default=None, alias="POLICY_VERSION")
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
