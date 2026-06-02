@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+*.egg
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+pytest-cache-files-*/
+
+# coverage
+.coverage
+htmlcov/
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
