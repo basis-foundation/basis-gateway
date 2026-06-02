@@ -434,6 +434,86 @@ Tasks are ordered to build a running skeleton before adding security-sensitive c
 
 ---
 
+## 17. Phase 4 Success Criteria
+
+Phase 4 is the first hardening pass after the v0.1 feature baseline (Phases 1–3). It replaces temporary v0.1 placeholders with production-ready counterparts and tightens readiness and startup behavior.
+
+Phase 4 is complete when all of the following are true.
+
+**Policy configuration**
+
+- Policies can be loaded from a configuration source — a file, environment-derived rule definitions, or another mechanism decided during Phase 4 design — at gateway startup.
+- The demo `RolePolicyRule` (`gateway-demo-rbac`) defined in `core/evaluator.py` is removed from the runtime evaluation path. It may remain accessible for tests or local development, but it must not be the default policy loaded in production or staging environments.
+- A startup failure in policy loading is treated as a fatal error: the gateway must not mark itself ready and must not serve `/v1/evaluate` requests if the policy engine cannot be initialized from configuration.
+
+**Readiness hardening**
+
+`GET /ready` returns 200 only when all of the following conditions hold:
+
+- Application configuration has been loaded and validated.
+- OIDC configuration is present: `OIDC_ISSUER` is set and the JWKS endpoint has been successfully contacted at least once since startup (or an explicit `OIDC_JWKS_URI` override has been verified reachable).
+- The `EnforcementPoint` has been initialized with at least one registered policy rule loaded from configuration.
+- Policy loading has completed without error.
+
+`GET /ready` returns 503 if any of the above conditions is not met, with a `reason` field identifying which component is not ready.
+
+**Startup failure semantics**
+
+When `/v1/evaluate` would be active (i.e. `OIDC_ISSUER` is configured or evaluation is explicitly enabled), gateway startup must fail predictably — not silently degrade — if:
+
+- Required OIDC configuration is absent.
+- The JWKS endpoint is unreachable and no cached keys are available.
+- Policy configuration is missing or cannot be parsed.
+- The `PolicyEngine` is constructed with zero rules.
+
+The v0.1 behaviour of starting with a warning and serving `/health` while `/v1/evaluate` rejects all requests is acceptable only when evaluation is explicitly not enabled.
+
+**Fail-closed preservation**
+
+All fail-closed guarantees established in Phases 1–3 must be preserved without regression:
+
+- OIDC verifier failure → 401, no evaluation.
+- JWKS unavailability → 401, no evaluation.
+- Policy loading failure → 503 from `/ready`; no evaluation served.
+- `EnforcementPoint` error → 403, fail closed.
+- Audit write failure → decision stands; failure logged; no 500 returned to caller.
+- Unexpected gateway exception → 500, no authorization granted.
+
+**Compatibility**
+
+- All existing Phase 1–3 behavior remains compatible. No breaking changes to `/health`, `/ready`, or `/v1/evaluate` request/response contracts.
+- All existing tests (Phases 1–3) continue to pass without modification.
+
+**Test coverage**
+
+New tests must cover:
+
+- Policy loading from configuration (valid config loads → correct rules active).
+- Policy loading failure (missing or malformed config → startup failure, `/ready` returns 503).
+- `/ready` with each dependency in a not-ready state (OIDC unreachable, evaluator not initialized, policy not loaded) — each case returns 503 with an informative `reason`.
+- Gateway startup with `OIDC_ISSUER` set and JWKS unreachable → startup fails or degrades to not-ready with a clear error.
+- Fail-closed behavior for all Phase 4 error conditions listed above.
+
+**Explicit non-goals for Phase 4**
+
+The following must not be introduced in Phase 4, regardless of how the motivation is framed:
+
+- `basis-console` integration
+- `basis-adapters` integration
+- Docker, docker-compose, or Kubernetes manifests
+- Persistent audit storage (beyond `LogAuditWriter`)
+- Distributed policy synchronization
+- Metrics or structured observability endpoints (deferred to a dedicated observability phase)
+- Commercial BASAuth features
+- Rate limiting, mTLS, or API key authentication
+- `POST /v1/batch/evaluate`
+
+**Tracked separately**
+
+Exposing `policy_version` through the `basis-core` public API — so the gateway does not need to access `EnforcementPoint._policy_version` via `getattr` — is a `basis-core` concern. It should be tracked as a `basis-core` issue: *"Expose policy version through basis-core public API."* Phase 4 may depend on the resolution of this issue but does not own it.
+
+---
+
 ## 16. Definition of Done
 
 v0.1 is complete when all of the following are true:
