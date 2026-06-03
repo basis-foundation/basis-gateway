@@ -25,6 +25,7 @@ class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     service_name: str = Field(default="basis-gateway")
@@ -44,6 +45,18 @@ class GatewayConfig(BaseSettings):
     # Policy configuration.
     policy_version: str | None = Field(default=None, alias="POLICY_VERSION")
 
+    # Path to the JSON policy file loaded at startup.
+    # Optional when evaluation endpoint is disabled.
+    # Required when evaluation endpoint is enabled (OIDC_ISSUER set).
+    policy_path: str | None = Field(default=None, alias="POLICY_PATH")
+
+    # When True, the evaluation endpoint is considered enabled and OIDC + policy are required.
+    # Derived at validation time; not a direct env var.
+    @property
+    def evaluation_enabled(self) -> bool:
+        """True when the /v1/evaluate endpoint requires full initialization."""
+        return self.oidc_issuer is not None
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -53,6 +66,23 @@ class GatewayConfig(BaseSettings):
                 f"Invalid LOG_LEVEL {v!r}. Must be one of: {', '.join(sorted(_VALID_LOG_LEVELS))}"
             )
         return upper
+
+
+class EvaluationConfigError(Exception):
+    """Raised when evaluation is enabled but required configuration is missing."""
+
+
+def validate_evaluation_config(config: GatewayConfig) -> None:
+    """Raise EvaluationConfigError if evaluation is enabled and config is incomplete.
+
+    Evaluation is considered enabled when OIDC_ISSUER is set. In that case
+    POLICY_PATH must also be provided. Fail early; do not allow partial init.
+    """
+    if config.oidc_issuer is not None and not config.policy_path:
+        raise EvaluationConfigError(
+                "POLICY_PATH is required when OIDC_ISSUER is configured. "
+                "Set POLICY_PATH to the path of your JSON policy file."
+            )
 
 
 def load_config() -> GatewayConfig:

@@ -8,10 +8,10 @@ Responsibilities:
 The EnforcementPoint is a singleton for the process lifetime. It is
 initialized once during the FastAPI lifespan and stored in app.state.
 
-Policy loading for v0.1:
-  Uses a built-in demo RolePolicyRule. This is a temporary placeholder;
-  a real policy configuration mechanism is out of scope for v0.1.
-  The demo policy is documented and clearly labeled as non-production.
+Policy loading:
+  Policies are loaded from a JSON file at startup via
+  basis_gateway.policy.loader.load_policy_engine(). The caller is
+  responsible for loading the PolicyEngine before calling build_evaluator().
 """
 
 from __future__ import annotations
@@ -31,45 +31,6 @@ from basis_core.policy import PolicyEngine, RolePolicyRule
 from basis_gateway.auth.subject_mapper import NormalizedSubject
 
 log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Demo policy — v0.1 placeholder
-# ---------------------------------------------------------------------------
-
-#: Minimal role table for local development and testing.
-#: All standard basis-core action constants are covered so tests can use real actions.
-_DEMO_ROLE_TABLE: dict[str, set[str]] = {
-    actions.READ_SENSOR_TELEMETRY: {"viewer", "operator", "admin"},
-    actions.READ_HVAC_STATE: {"viewer", "operator", "admin"},
-    actions.READ_ZONE_STATE: {"viewer", "operator", "admin"},
-    actions.READ_DEVICE_STATE: {"viewer", "operator", "admin"},
-    actions.READ_AUDIT_LOG: {"admin"},
-    actions.READ_POLICY: {"admin"},
-    actions.READ_RESOURCES: {"viewer", "operator", "admin"},
-    actions.WRITE_HVAC_SETPOINT: {"operator", "admin"},
-    actions.WRITE_HVAC_MODE: {"operator", "admin"},
-    actions.WRITE_DEVICE_SETPOINT: {"operator", "admin"},
-    actions.WRITE_POLICY: {"admin"},
-    actions.EXECUTE_DEVICE_COMMAND: {"operator", "admin"},
-    actions.SUBSCRIBE_TELEMETRY: {"viewer", "operator", "admin"},
-    actions.DISCONNECT_TELEMETRY: {"operator", "admin"},
-}
-
-
-def _build_demo_policy_engine() -> PolicyEngine:
-    """Build the v0.1 demo PolicyEngine.
-
-    This is a temporary placeholder. Replace with a real policy loading
-    mechanism in a future phase.
-    """
-    return PolicyEngine(
-        policies=[
-            RolePolicyRule(
-                role_table=_DEMO_ROLE_TABLE,
-                rule_name="gateway-demo-rbac",
-            )
-        ]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -199,31 +160,54 @@ class GatewayEvaluator:
 
 
 def build_evaluator(
+    engine: PolicyEngine,
     audit_writer: AuditWriter,
     policy_version: str | None = None,
 ) -> GatewayEvaluator:
-    """Build a GatewayEvaluator using the demo policy.
+    """Build a GatewayEvaluator from a loaded PolicyEngine.
 
     Args:
+        engine: A PolicyEngine constructed from the loaded policy file.
         audit_writer: The audit writer to use. Must implement AuditWriter protocol.
         policy_version: Optional version string included in responses and audit records.
 
     Returns:
         An initialized GatewayEvaluator ready to serve requests.
     """
-    engine = _build_demo_policy_engine()
     ep = EnforcementPoint(
         engine=engine,
         audit_writer=audit_writer,
         policy_version=policy_version,
     )
-    log.info("GatewayEvaluator initialized with demo policy, version=%s", policy_version)
+    log.info("GatewayEvaluator initialized, version=%s", policy_version)
     return GatewayEvaluator(_enforcement_point=ep)
 
 
 def build_null_evaluator() -> GatewayEvaluator:
-    """Build a GatewayEvaluator with NullAuditWriter for tests."""
-    engine = _build_demo_policy_engine()
+    """Build a GatewayEvaluator with a minimal in-memory policy. For tests only."""
+    engine = PolicyEngine(
+        policies=[
+            RolePolicyRule(
+                role_table={
+                    actions.READ_SENSOR_TELEMETRY: {"viewer", "operator", "admin"},
+                    actions.READ_HVAC_STATE: {"viewer", "operator", "admin"},
+                    actions.READ_ZONE_STATE: {"viewer", "operator", "admin"},
+                    actions.READ_DEVICE_STATE: {"viewer", "operator", "admin"},
+                    actions.READ_AUDIT_LOG: {"admin"},
+                    actions.READ_POLICY: {"admin"},
+                    actions.READ_RESOURCES: {"viewer", "operator", "admin"},
+                    actions.WRITE_HVAC_SETPOINT: {"operator", "admin"},
+                    actions.WRITE_HVAC_MODE: {"operator", "admin"},
+                    actions.WRITE_DEVICE_SETPOINT: {"operator", "admin"},
+                    actions.WRITE_POLICY: {"admin"},
+                    actions.EXECUTE_DEVICE_COMMAND: {"operator", "admin"},
+                    actions.SUBSCRIBE_TELEMETRY: {"viewer", "operator", "admin"},
+                    actions.DISCONNECT_TELEMETRY: {"operator", "admin"},
+                },
+                rule_name="test-rbac",
+            )
+        ]
+    )
     ep = EnforcementPoint(engine=engine, audit_writer=NullAuditWriter(), policy_version="test")
     return GatewayEvaluator(_enforcement_point=ep)
 
