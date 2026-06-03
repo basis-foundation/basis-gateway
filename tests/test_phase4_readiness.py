@@ -88,8 +88,13 @@ def test_ready_200_all_components_individually_ready(client):
     response = client.get("/ready")
     assert response.status_code == 200
     components = response.json()["components"]
-    for key in ("configuration_loaded", "oidc_configured", "jwks_available",
-                "policy_loaded", "evaluator_initialized"):
+    for key in (
+        "configuration_loaded",
+        "oidc_configured",
+        "jwks_available",
+        "policy_loaded",
+        "evaluator_initialized",
+    ):
         assert components[key] is True
 
 

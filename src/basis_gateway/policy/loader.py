@@ -116,24 +116,17 @@ def load_policy_engine(policy_path: str) -> PolicyEngine:
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise PolicyLoadError(
-            f"Policy file {policy_path!r} is not valid JSON: {exc}"
-        ) from exc
+        raise PolicyLoadError(f"Policy file {policy_path!r} is not valid JSON: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise PolicyLoadError(
-            f"Policy file {policy_path!r} must be a JSON object at the top level"
-        )
+        raise PolicyLoadError(f"Policy file {policy_path!r} must be a JSON object at the top level")
 
     raw_rules = data.get("rules")
     if raw_rules is None:
-        raise PolicyLoadError(
-            f"Policy file {policy_path!r} must contain a 'rules' array"
-        )
+        raise PolicyLoadError(f"Policy file {policy_path!r} must contain a 'rules' array")
     if not isinstance(raw_rules, list):
         raise PolicyLoadError(
-            f"Policy file {policy_path!r}: 'rules' must be an array, "
-            f"got {type(raw_rules).__name__}"
+            f"Policy file {policy_path!r}: 'rules' must be an array, got {type(raw_rules).__name__}"
         )
     if len(raw_rules) == 0:
         raise PolicyLoadError(

@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "rule_name": "gateway-rbac",
+      "role_table": {
+        "read:sensor:telemetry":   ["viewer", "operator", "admin"],
+        "read:hvac:state":         ["viewer", "operator", "admin"],
+        "read:zone:state":         ["viewer", "operator", "admin"],
+        "read:device:state":       ["viewer", "operator", "admin"],
+        "read:audit:log":          ["admin"],
+        "read:policy":             ["admin"],
+        "read:resources":          ["viewer", "operator", "admin"],
+        "write:hvac:setpoint":     ["operator", "admin"],
+        "write:hvac:mode":         ["operator", "admin"],
+        "write:device:setpoint":   ["operator", "admin"],
+        "write:policy":            ["admin"],
+        "execute:device:command":  ["operator", "admin"],
+        "subscribe:telemetry":     ["viewer", "operator", "admin"],
+        "disconnect:telemetry":    ["operator", "admin"]
+      }
+    }
+  ]
+}
