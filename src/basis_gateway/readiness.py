@@ -1,13 +1,15 @@
 """Readiness state for basis-gateway.
 
 Tracks whether the application and its required components are ready to
-serve requests. Components are registered by name; all registered
-components must be ready for the overall state to be ready.
+serve requests. All registered components must be ready for the overall
+state to be ready.
 
-Phase 3 components tracked:
-  - "app"       — startup config and basic initialization
-  - "evaluator" — EnforcementPoint initialized
-  - "oidc"      — OIDC verifier initialized (optional in local-dev mode)
+Phase 4 components tracked:
+  - "configuration_loaded" — startup config validated successfully
+  - "oidc_configured"      — OIDC verifier initialized (optional when eval disabled)
+  - "jwks_available"       — JWKS endpoint reachable and keys loaded
+  - "evaluator_initialized"— EnforcementPoint constructed
+  - "policy_loaded"        — policy file loaded and parsed successfully
 """
 
 from __future__ import annotations
@@ -54,6 +56,12 @@ class ReadinessState:
                 if not ready:
                     return self._reasons.get(component, f"{component} not ready")
             return ""
+
+    @property
+    def components(self) -> dict[str, bool]:
+        """Snapshot of current component readiness states."""
+        with self._lock:
+            return dict(self._components)
 
 
 # Module-level singleton shared by the FastAPI app and tests.
