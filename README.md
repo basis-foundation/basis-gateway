@@ -24,69 +24,37 @@ This is a private implementation repository. The service is not production-ready
 
 ### Phase 3 — basis-core integration and `/v1/evaluate` ✓
 - `POST /v1/evaluate` — full authorization lifecycle; subject from JWT, not request body
-- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`; demo RBAC policy for v0.1
+- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`
 - `src/basis_gateway/audit/writer.py` — `GatewayAuditWriter` delegating to `LogAuditWriter`; write failures logged, never propagated
 - `basis-core` integrated as package dependency; `EnforcementPoint` initialized at lifespan startup
 - 35 new tests (102 total): evaluate, fail-closed, audit
 
-### Still out of scope
-- Production policy loading (v0.1 uses a demo `RolePolicyRule`)
-- Persistent audit storage beyond log output
-- `POST /v1/batch/evaluate`
-- mTLS, rate limiting, admin API
+### Phase 4 — Policy loading and readiness hardening ✓
+- `src/basis_gateway/policy/loader.py` — `load_policy_engine()` reads a JSON policy file at startup; raises `PolicyLoadError` on missing file, invalid JSON, or schema errors
+- Policy required at startup when `OIDC_ISSUER` is set; startup fails predictably with a clear error when `POLICY_PATH` is absent
+- `/ready` now returns per-component readiness state: `configuration_loaded`, `oidc_configured`, `jwks_available`, `policy_loaded`, `evaluator_initialized`
+- Demo `RolePolicyRule` removed from the runtime path; `policies/default.json` is the checked-in example policy
+- 34 new tests (136 total): policy loader, readiness components, startup integration
 
-## What this repository currently contains
-
-Phases 1–3 are complete. The service starts, authenticates callers via OIDC JWT, normalizes identity, evaluates authorization requests against `basis-core`, and returns enforced decisions with audit emission.
-
-- `GET /health` — liveness probe; always 200 when the process is running
-- `GET /ready` — readiness probe; 200 when config + evaluator are initialized
-- `POST /v1/evaluate` — authorization evaluation (see usage below)
-- `src/basis_gateway/auth/` — OIDC verifier, subject mapper, error types
-- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`
-- `src/basis_gateway/audit/writer.py` — `GatewayAuditWriter`
-- `tests/` — 102 tests; no live IdP required
-- `pyproject.toml` — project config, ruff, mypy (strict), pytest
+### Phase 5 — Example policy and runtime documentation ✓
+- `policies/default.json` — checked-in example policy covering all standard basis-core actions
+- `.env.example` — documented environment variable reference with placeholder values
+- README updated to reflect Phase 4/5 runtime shape
 
 ---
 
-## POST /v1/evaluate
+## What the gateway requires
 
-Requires a valid Bearer token in the `Authorization` header. Subject identity is derived from the token — do not provide `subject_id` or `subject_roles` in the body.
+When evaluation is enabled (i.e., `OIDC_ISSUER` is set), the gateway requires all of the following before it will serve authorization requests:
 
-```bash
-curl -X POST http://localhost:8000/v1/evaluate \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "read:sensor:telemetry",
-    "resource_id": "sensor:ahu-1"
-  }'
-```
+- **OIDC issuer** — `OIDC_ISSUER` must be set to a reachable issuer URL. The gateway uses OIDC discovery to locate the JWKS endpoint and validate `iss` claims.
+- **JWKS availability** — the JWKS endpoint discovered from the issuer must be reachable at startup.
+- **Policy file** — `POLICY_PATH` must point to a valid JSON policy file. The file is loaded once at startup.
+- **Evaluator initialization** — the `EnforcementPoint` must be successfully constructed from the loaded policy.
 
-**Response (ALLOW):**
-```json
-{"request_id": "...", "outcome": "allow", "reason": "...", "policy_version": null}
-```
+If any of these fail, the service starts but `/ready` returns `503` until all components are initialized. This is intentional fail-closed behavior: a misconfigured gateway will not serve requests rather than silently denying them with a generic error.
 
-**Response (DENY or NOT_APPLICABLE):** HTTP 403 with `"outcome": "deny"` or `"outcome": "not_applicable"`.
-
-The `X-Correlation-ID` header is always present in the response.
-
-**v0.1 policy note:** The service uses a built-in demo `RolePolicyRule`. Roles come from the `realm_access.roles` or `roles` JWT claim. This is a temporary placeholder — a real policy configuration mechanism is planned for a future phase.
-
----
-
-## What is intentionally out of scope
-
-The following will be added in later phases:
-
-- Production policy loading (demo RBAC rule only in v0.1)
-- Docker, docker-compose, Kubernetes manifests
-- GitHub Actions or CI configuration
-- Protocol adapters
-- `basis-console` integration
-- Deployment tooling of any kind
+When `OIDC_ISSUER` is not set, the gateway starts without OIDC or policy initialization. `/v1/evaluate` rejects all requests with `401 Authentication not configured`. This is the default local-dev mode and is not suitable for production.
 
 ---
 
@@ -100,13 +68,42 @@ cd basis-gateway
 pip install -e ".[dev]"
 ```
 
-Run the service locally. No live IdP is required for Phase 1/2 tests:
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+# Edit .env with your OIDC issuer and other settings
+```
+
+Start the service:
 
 ```bash
 uvicorn basis_gateway.main:app --reload
 ```
 
-The service starts on `http://localhost:8000` by default. Environment variables:
+The service starts on `http://localhost:8000` by default.
+
+---
+
+## Minimum local configuration (evaluation enabled)
+
+```bash
+OIDC_ISSUER=https://your-idp.example.com/realms/your-realm
+OIDC_AUDIENCE=basis-gateway
+POLICY_PATH=policies/default.json
+```
+
+With these three variables set, the gateway will:
+1. Discover the JWKS endpoint from the issuer
+2. Load `policies/default.json`
+3. Initialize the evaluator
+4. Mark all readiness components ready
+
+See `.env.example` for the full list of supported variables.
+
+---
+
+## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
@@ -115,11 +112,140 @@ The service starts on `http://localhost:8000` by default. Environment variables:
 | `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `ENVIRONMENT` | `local` | Deployment environment (`local`, `development`, `staging`, `production`) |
 | `SERVICE_NAME` | `basis-gateway` | Service identifier in health/ready responses |
-| `OIDC_ISSUER` | _(none)_ | Token issuer URL; used for discovery and `iss` validation. Without this, `/v1/evaluate` rejects all requests. |
+| `OIDC_ISSUER` | _(none)_ | Token issuer URL; required to enable `/v1/evaluate`. Used for OIDC discovery and `iss` validation. |
 | `OIDC_AUDIENCE` | _(none)_ | Expected `aud` claim. If unset, audience is not validated. |
 | `OIDC_JWKS_URI` | _(none)_ | Override JWKS endpoint; skips OIDC discovery when set. |
 | `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
+| `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when `OIDC_ISSUER` is set. |
 | `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
+
+---
+
+## GET /ready
+
+Returns `200` when all required components are initialized. Returns `503` when any required component is not ready.
+
+**Ready response (200):**
+```json
+{
+  "status": "ready",
+  "service": "basis-gateway",
+  "components": {
+    "configuration_loaded": true,
+    "oidc_configured": true,
+    "jwks_available": true,
+    "policy_loaded": true,
+    "evaluator_initialized": true
+  }
+}
+```
+
+**Not-ready response (503):**
+```json
+{
+  "status": "not_ready",
+  "service": "basis-gateway",
+  "components": {
+    "configuration_loaded": true,
+    "oidc_configured": false
+  },
+  "reason": "OIDC verifier initialization failed: ..."
+}
+```
+
+The `reason` field describes the first failed component. The `components` dict shows which components have been reached.
+
+---
+
+## POST /v1/evaluate
+
+Requires a valid Bearer token in the `Authorization` header. Subject identity is derived from the token — do not provide `subject_id` or `subject_roles` in the body.
+
+```bash
+curl -X POST http://localhost:8000/v1/evaluate \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "read:sensor:telemetry",
+    "resource_id": "sensor:ahu-1",
+    "context": {}
+  }'
+```
+
+**Optional fields:**
+- `request_id` — caller-supplied request ID; a UUID is generated if omitted
+- `resource_id` — resource identifier for the action; omit if not applicable
+- `context` — string key/value pairs passed through to the policy rule
+
+**Response (ALLOW, 200):**
+```json
+{
+  "request_id": "a1b2c3d4-...",
+  "outcome": "allow",
+  "reason": "Subject holds a role permitted for 'read:sensor:telemetry'.",
+  "policy_version": null
+}
+```
+
+**Response (DENY, 403):**
+```json
+{
+  "request_id": "a1b2c3d4-...",
+  "outcome": "deny",
+  "reason": "Action 'read:sensor:telemetry' requires one of ['admin', 'operator', 'viewer']; subject holds ['guest'].",
+  "policy_version": null
+}
+```
+
+The `X-Correlation-ID` response header is always set to a gateway-generated UUID.
+
+> **Note:** A valid OIDC token from the configured issuer is required. The examples above will return `401` without a real token signed by the configured IdP.
+
+---
+
+## Policy file format
+
+The gateway loads a single JSON policy file at startup. The file must contain a `rules` array with at least one rule. Each rule specifies a `role_table` mapping action strings to permitted role names.
+
+```json
+{
+  "rules": [
+    {
+      "rule_name": "my-rbac",
+      "role_table": {
+        "read:sensor:telemetry": ["viewer", "operator", "admin"],
+        "write:hvac:setpoint":   ["operator", "admin"]
+      }
+    }
+  ]
+}
+```
+
+Action strings must match the action constants defined in `basis-core`. See `policies/default.json` for a complete example covering all standard actions.
+
+**Policy loading behavior:**
+- The policy file is loaded once at startup. There is no dynamic reload.
+- If the file is missing or invalid, startup continues but the service does not become ready (`/ready` returns `503`).
+- When `OIDC_ISSUER` is set and `POLICY_PATH` is absent, startup fails immediately with a clear error message.
+- There is no policy authoring API. Edit the JSON file and restart the service.
+
+---
+
+## What is intentionally out of scope
+
+The following are not implemented and will not be added without a new phase decision:
+
+- Policy authoring UI or API
+- Dynamic policy reload without restart
+- Policy versioning or deployment pipeline
+- Policy storage service or database
+- Docker, docker-compose, Kubernetes manifests
+- GitHub Actions or CI configuration
+- Protocol adapters
+- `basis-console` integration
+- Metrics and distributed tracing
+- Distributed policy synchronization
+- OPA, Cedar, or other external policy engines
 
 ---
 
@@ -135,25 +261,39 @@ ruff check .
 # Format check
 ruff format --check .
 
-# Type check (mypy cache must be on a writable filesystem)
+# Type check
 mypy src --cache-dir /tmp/mypy-cache-basis-gateway
 ```
 
-Optional Makefile targets (if you add a `Makefile`):
+---
 
-```bash
-make test
-make lint
-make typecheck
+## Repository layout
+
+```
+src/basis_gateway/
+  api/          — routes, request/response schemas
+  auth/         — OIDC verifier, subject mapper, error types
+  audit/        — audit writer (delegates to basis-core LogAuditWriter)
+  core/         — GatewayEvaluator wrapping basis-core EnforcementPoint
+  policy/       — policy loader (reads JSON, constructs PolicyEngine)
+  config.py     — environment-variable configuration
+  main.py       — FastAPI app, lifespan startup/shutdown
+  readiness.py  — per-component readiness tracker
+
+policies/
+  default.json  — example policy covering all standard basis-core actions
+
+tests/          — 139 tests; no live IdP required
+.env.example    — documented environment variable reference
 ```
 
 ---
 
 ## Related documents
 
-- [`docs/basis-gateway-v0.1-plan.md`](docs/basis-gateway-v0.1-plan.md) — v0.1 implementation plan; full scope including JWT/OIDC, basis-core integration, and evaluate endpoint
+- [`docs/basis-gateway-v0.1-plan.md`](docs/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
-- [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway will call into (`EnforcementPoint`, `DecisionRequest`, `Subject`, `AuditWriter`, etc.)
+- [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
 
 ---
 
@@ -168,16 +308,3 @@ basis-core     (evaluates; returns DecisionResponse)
 ```
 
 `basis-gateway` authenticates callers, normalizes identity context, constructs kernel-compatible decision requests, invokes `basis-core`, enforces the returned decision, and emits audit evidence. It does not evaluate policy.
-
----
-
-## Next implementation phase
-
-**Phase 4: production hardening**
-
-1. Policy configuration mechanism — replace the v0.1 demo `RolePolicyRule` with a real policy loading path (file-based, env-driven, or configurable)
-2. `OIDC_ISSUER` required at startup when `POST /v1/evaluate` is active (currently optional; service degrades gracefully)
-3. `/ready` OIDC component — check JWKS reachability as a readiness condition
-4. Observability — structured logging with request/correlation IDs, metrics hooks for audit failure count and evaluation latency
-5. `POST /v1/batch/evaluate` — batch evaluation endpoint (out of scope for v0.1)
-6. Subject type inference — use claim-based heuristics to populate `SubjectType` beyond `HUMAN`

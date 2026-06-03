@@ -80,9 +80,9 @@ def validate_evaluation_config(config: GatewayConfig) -> None:
     """
     if config.oidc_issuer is not None and not config.policy_path:
         raise EvaluationConfigError(
-                "POLICY_PATH is required when OIDC_ISSUER is configured. "
-                "Set POLICY_PATH to the path of your JSON policy file."
-            )
+            "POLICY_PATH is required when OIDC_ISSUER is configured. "
+            "Set POLICY_PATH to the path of your JSON policy file."
+        )
 
 
 def load_config() -> GatewayConfig:
