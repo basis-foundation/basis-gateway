@@ -292,6 +292,7 @@ tests/          — 139 tests; no live IdP required
 ## Related documents
 
 - [`docs/basis-gateway-v0.1-plan.md`](docs/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
+- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, open questions
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
 
