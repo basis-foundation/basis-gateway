@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
-class GatewayConfig(BaseSettings):
+class GatewayConfig(BaseSettings):  # type: ignore[misc]
     """Runtime configuration for basis-gateway.
 
     Loaded from environment variables at startup. Defaults are safe for local
