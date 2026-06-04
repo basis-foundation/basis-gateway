@@ -47,3 +47,14 @@ ignore = ["B008"]
 python_version = "3.10"
 strict = true
 files = ["src"]
+
+# Starlette does not ship a py.typed marker in all versions, so importing from
+# starlette.middleware.base may produce import-untyped or import-not-found errors
+# depending on the installed version.  The targeted type: ignore comments in
+# correlation.py handle those cases, but strict mode's warn_unused_ignores would
+# flag them as spurious in environments where starlette IS typed.  Disabling
+# warn_unused_ignores for just this module keeps the rest of the codebase fully
+# strict while allowing the cross-environment ignores to coexist quietly.
+[[tool.mypy.overrides]]
+module = ["basis_gateway.middleware.correlation"]
+warn_unused_ignores = false
