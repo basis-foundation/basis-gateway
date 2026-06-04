@@ -41,6 +41,13 @@ This is a private implementation repository. The service is not production-ready
 - `.env.example` — documented environment variable reference with placeholder values
 - README updated to reflect Phase 4/5 runtime shape
 
+### Phase 7 — Correlation and failure evidence hardening ✓
+- `src/basis_gateway/middleware/correlation.py` — `CorrelationMiddleware` generates a UUIDv4 correlation ID per request at gateway ingress, attaches it to `request.state.correlation_id`, and adds `X-Correlation-ID` to every response
+- `X-Correlation-ID` is now returned on **all** gateway responses, including 400, 401, 503 pre-evaluation failures that previously lacked the header
+- The evaluate route reads `request.state.correlation_id` instead of generating a second UUID, ensuring the same ID appears in the response header and the `basis-core` audit event
+- Caller-supplied `X-Correlation-ID` request headers are not trusted; the gateway generates the correlation ID unconditionally
+- `docs/audit-model.md` updated to document Phase 7 correlation behavior and the remaining pre-evaluation audit evidence gap
+
 ---
 
 ## What the gateway requires
@@ -197,7 +204,9 @@ curl -X POST http://localhost:8000/v1/evaluate \
 }
 ```
 
-The `X-Correlation-ID` response header is always set to a gateway-generated UUID.
+The `X-Correlation-ID` response header is set on all gateway responses. It contains a
+gateway-generated UUIDv4. Caller-supplied `X-Correlation-ID` request headers are ignored
+and not used as the authoritative correlation ID.
 
 > **Note:** A valid OIDC token from the configured issuer is required. The examples above will return `401` without a real token signed by the configured IdP.
 
@@ -283,7 +292,7 @@ src/basis_gateway/
 policies/
   default.json  — example policy covering all standard basis-core actions
 
-tests/          — 139 tests; no live IdP required
+tests/          — see pytest output for current count; no live IdP required
 .env.example    — documented environment variable reference
 ```
 

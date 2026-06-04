@@ -37,6 +37,7 @@ from basis_gateway.config import (
     validate_evaluation_config,
 )
 from basis_gateway.core.evaluator import build_evaluator
+from basis_gateway.middleware.correlation import CorrelationMiddleware
 from basis_gateway.policy.loader import PolicyLoadError, load_policy_engine
 from basis_gateway.readiness import get_readiness_state
 
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(router)
+    app.add_middleware(CorrelationMiddleware)
 
     # Convert Pydantic validation errors to 400 instead of 422.
     @app.exception_handler(RequestValidationError)
