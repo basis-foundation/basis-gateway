@@ -22,7 +22,6 @@ from typing import Any
 import httpx
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
-from jwt.types import Options as JWTOptions
 
 from basis_gateway.auth.errors import (
     JWKSFetchError,
@@ -224,12 +223,14 @@ class OIDCVerifier:
         # PyJWKClient handles in-memory key caching with TTL.
         # cache_jwk_set=True + lifespan=TTL gives us the caching behaviour we need.
         # On unknown kid it re-fetches automatically.
+        # cache_jwk_set and lifespan were added in PyJWT 2.8; older stub versions do
+        # not list them even though the runtime accepts them.
         try:
-            client = PyJWKClient(
+            client = PyJWKClient(  # type: ignore[call-arg]
                 jwks_uri,
                 cache_keys=True,
                 cache_jwk_set=True,
-                lifespan=self.cache_ttl_seconds,
+                lifespan=int(self.cache_ttl_seconds),
             )
             # Eagerly fetch JWKS to validate connectivity at startup.
             client.fetch_data()
@@ -261,8 +262,10 @@ class OIDCVerifier:
             )
 
         # Reject alg=none and other unsupported algorithms before key lookup.
+        # jwt.get_unverified_header lacks type annotations in older PyJWT stub versions;
+        # the return type is Dict[str, Any] at runtime.
         try:
-            header = jwt.get_unverified_header(token)
+            header: dict[str, Any] = jwt.get_unverified_header(token)  # type: ignore[no-untyped-call]
         except jwt.exceptions.DecodeError as exc:
             raise JWTVerificationError("Malformed JWT header") from exc
 
@@ -274,10 +277,13 @@ class OIDCVerifier:
 
         signing_key = self._cache.get_signing_key(token)
 
-        decode_options = JWTOptions(
-            verify_exp=True,
-            verify_iss=True,
-        )
+        # jwt.types.Options was added in PyJWT 2.8; use a plain dict to stay
+        # compatible with older stub versions while preserving the same runtime
+        # behaviour — jwt.decode() accepts Dict[str, Any] for options.
+        decode_options: dict[str, bool] = {
+            "verify_exp": True,
+            "verify_iss": True,
+        }
 
         audience = self.audience if self.audience else None
 

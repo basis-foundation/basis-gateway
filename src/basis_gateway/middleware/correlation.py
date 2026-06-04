@@ -39,7 +39,9 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from starlette.middleware.base import BaseHTTPMiddleware  # type: ignore[import-not-found, import-untyped]
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,  # type: ignore[import-not-found, import-untyped]
+)
 
 
 class CorrelationMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
