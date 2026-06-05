@@ -69,11 +69,53 @@ When `OIDC_ISSUER` is not set, the gateway starts without OIDC or policy initial
 
 **Requirements:** Python 3.10+
 
+### Sibling repository layout
+
+`basis-gateway` depends on the BASIS `basis-core` library. This is **not** the unrelated public
+PyPI package named `basis-core` — it is the sibling repository in the same checkout tree.
+
+Both repositories must be checked out as siblings:
+
+```
+REPOS/
+  basis-core/      ← the BASIS basis-core repo
+  basis-gateway/   ← this repo
+```
+
+### Install order
+
+Always install `basis-core` first so that `pip` resolves it from the local editable install
+rather than attempting to download the wrong package from PyPI.
+
 ```bash
-git clone <repo>
-cd basis-gateway
+cd ~/REPOS/basis-gateway
+
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip setuptools wheel
+
+pip install -e ../basis-core
 pip install -e ".[dev]"
 ```
+
+### Verify the correct package is installed
+
+```bash
+python -c "import basis_core; print(basis_core.__file__)"
+```
+
+Expected output (path will vary by username):
+
+```
+/Users/<you>/REPOS/basis-core/src/basis_core/__init__.py
+```
+
+If the path points into `.venv/lib/.../site-packages/basis_core/` without referencing the
+local sibling checkout, the wrong package was installed. See [Troubleshooting](#troubleshooting)
+below.
+
+### Continue setup
 
 Copy `.env.example` to `.env` and fill in your values:
 
@@ -255,6 +297,41 @@ The following are not implemented and will not be added without a new phase deci
 - Metrics and distributed tracing
 - Distributed policy synchronization
 - OPA, Cedar, or other external policy engines
+
+---
+
+## Troubleshooting
+
+### `pip install -e ".[dev]"` tries to download `basis-core` from PyPI
+
+**Symptom:** `pip` fetches or attempts to fetch a `basis-core` package from PyPI during
+`pip install -e ".[dev]"`. You may also see unexpected compile errors for `numpy`, `pandas`,
+or `pyarrow` — those are pulled in by the unrelated PyPI package, not this project.
+
+**Cause:** The local BASIS `basis-core` repository was not installed before running
+`pip install -e ".[dev]"`.
+
+**Fix:** Recreate the virtual environment and install in the correct order:
+
+```bash
+deactivate
+rm -rf .venv
+
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip setuptools wheel
+pip install -e ../basis-core
+pip install -e ".[dev]"
+```
+
+Then verify:
+
+```bash
+python -c "import basis_core; print(basis_core.__file__)"
+```
+
+The path must reference `../basis-core/src/basis_core/__init__.py`, not `.venv/site-packages`.
 
 ---
 
