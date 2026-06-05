@@ -277,6 +277,15 @@ The current backend is `LogAuditWriter` (structured JSON to the process log). Pe
 audit storage and the handoff from log-based to durable storage are out of scope.
 
 **Policy version provenance**
-`policy_version` is an optional string set at startup via `POLICY_VERSION`. There is no
-mechanism linking it to a specific policy file hash, deployment artifact, or version
-control reference. Formalizing policy version provenance is a future concern.
+`policy_version` is an optional string configured at startup via `POLICY_VERSION`. The
+gateway passes this value into `basis-core` `EnforcementPoint` at construction. The kernel
+owns the effective value and exposes it through the public `EnforcementPoint.policy_version`
+property. The gateway reads from that property rather than maintaining its own copy.
+
+The value propagates verbatim into every `DecisionResponse.policy_version` and
+`AuditEvent.policy_version` the enforcement point produces. It is provenance metadata only
+— it records which policy set was active at evaluation time and does not affect evaluation
+semantics, policy lifecycle, or policy history.
+
+There is no mechanism linking `policy_version` to a specific policy file hash, deployment
+artifact, or version control reference. Formalizing that linkage is a future concern.

@@ -153,10 +153,15 @@ class GatewayEvaluator:
 
     @property
     def policy_version(self) -> str | None:
-        """The policy version string configured on the EnforcementPoint."""
-        # Access the private attribute; no public accessor exists in basis-core v0.1.
-        ep: object = self._enforcement_point
-        return getattr(ep, "_policy_version", None)
+        """The policy version string configured on the EnforcementPoint.
+
+        Reads from the kernel public API. The value originates from the
+        ``policy_version`` parameter passed to ``build_evaluator()`` and is
+        owned by ``EnforcementPoint`` after construction. It is propagated
+        verbatim into every ``DecisionResponse`` and ``AuditEvent`` the
+        enforcement point produces.
+        """
+        return self._enforcement_point.policy_version
 
 
 def build_evaluator(
