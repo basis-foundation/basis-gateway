@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
+from jwt.types import Options as JWTOptions
 
 from basis_gateway.auth.errors import (
     JWKSFetchError,
@@ -277,10 +278,7 @@ class OIDCVerifier:
 
         signing_key = self._cache.get_signing_key(token)
 
-        # jwt.types.Options was added in PyJWT 2.8; use a plain dict to stay
-        # compatible with older stub versions while preserving the same runtime
-        # behaviour — jwt.decode() accepts Dict[str, Any] for options.
-        decode_options: dict[str, bool] = {
+        decode_options: JWTOptions = {
             "verify_exp": True,
             "verify_iss": True,
         }
