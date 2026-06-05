@@ -41,12 +41,21 @@ This is a private implementation repository. The service is not production-ready
 - `.env.example` — documented environment variable reference with placeholder values
 - README updated to reflect Phase 4/5 runtime shape
 
-### Phase 7 — Correlation and failure evidence hardening ✓
+### Phase 6 — Audit model documentation ✓
+- `docs/audit-model.md` — canonical description of the gateway audit boundary: what evidence is produced, what is owned by the kernel vs. the gateway, audit failure behavior, and open questions
+
+### Phase 7 — Correlation hardening ✓
 - `src/basis_gateway/middleware/correlation.py` — `CorrelationMiddleware` generates a UUIDv4 correlation ID per request at gateway ingress, attaches it to `request.state.correlation_id`, and adds `X-Correlation-ID` to every response
-- `X-Correlation-ID` is now returned on **all** gateway responses, including 400, 401, 503 pre-evaluation failures that previously lacked the header
-- The evaluate route reads `request.state.correlation_id` instead of generating a second UUID, ensuring the same ID appears in the response header and the `basis-core` audit event
+- `X-Correlation-ID` is now returned on **all** gateway responses, including 400, 401, and 503 pre-evaluation failures that previously lacked the header
+- The evaluate route reads `request.state.correlation_id` instead of generating a second UUID, ensuring the same ID appears in the response header and the audit record
 - Caller-supplied `X-Correlation-ID` request headers are not trusted; the gateway generates the correlation ID unconditionally
-- `docs/audit-model.md` updated to document Phase 7 correlation behavior and the remaining pre-evaluation audit evidence gap
+
+### Audit hardening ✓
+- `src/basis_gateway/audit/gateway_events.py` — stable gateway audit event vocabulary and `emit_gateway_event()` helper
+- Gateway now emits `AuditEvent` records for outcomes that occur before the kernel is reached: authentication failures, request validation failures, evaluator unavailability, and fail-closed evaluation exceptions
+- Pre-evaluation receipt event (`gateway.evaluation_requested`) emitted after authentication succeeds and before calling the kernel — proves receipt even if evaluation later fails
+- All gateway events carry `correlation_id`, `http_method`, `request_path`, and subject/policy context where known; raw tokens are never included
+- `docs/audit-model.md` updated with full event inventory, reason vocabulary, and correlation threading model
 
 ---
 
@@ -359,7 +368,7 @@ mypy src --cache-dir /tmp/mypy-cache-basis-gateway
 src/basis_gateway/
   api/          — routes, request/response schemas
   auth/         — OIDC verifier, subject mapper, error types
-  audit/        — audit writer (delegates to basis-core LogAuditWriter)
+  audit/        — GatewayAuditWriter (delegates to basis-core LogAuditWriter) + gateway_events (gateway-level audit emission)
   core/         — GatewayEvaluator wrapping basis-core EnforcementPoint
   policy/       — policy loader (reads JSON, constructs PolicyEngine)
   config.py     — environment-variable configuration
@@ -377,8 +386,8 @@ tests/          — see pytest output for current count; no live IdP required
 
 ## Related documents
 
-- [`docs/basis-gateway-v0.1-plan.md`](docs/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
-- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, open questions
+- [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan (historical; reflects design decisions made before implementation)
+- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, gateway and kernel event inventory, correlation ID threading, identity evidence, failure behavior
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
 
