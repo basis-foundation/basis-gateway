@@ -151,6 +151,22 @@ def captured_events() -> list:
 
 
 @pytest.fixture()
+def gateway_events() -> list:
+    """Captures gateway-level audit events written to app.state.audit_writer."""
+    return []
+
+
+class CapturingWriter:
+    """AuditWriter that appends every event to a list. Used for gateway-level audit tests."""
+
+    def __init__(self, sink: list) -> None:
+        self._sink = sink
+
+    def write(self, event: Any) -> None:
+        self._sink.append(event)
+
+
+@pytest.fixture()
 def capturing_evaluator(captured_events: list) -> GatewayEvaluator:
     """GatewayEvaluator that stores audit events in a list for assertions."""
     from basis_core.audit import AuditEvent
@@ -184,6 +200,34 @@ def capture_client(capturing_evaluator: GatewayEvaluator, mock_verifier: MockVer
     a = create_app()
     with TestClient(a, raise_server_exceptions=False) as c:
         a.state.evaluator = capturing_evaluator
+        a.state.verifier = mock_verifier
+        get_readiness_state().mark_ready("oidc")
+        yield c
+
+
+@pytest.fixture()
+def gateway_capture_client(
+    gateway_events: list,
+    mock_verifier: MockVerifier,
+):
+    """TestClient with a capturing gateway audit_writer and a null evaluator.
+
+    Use this fixture for audit-hardening tests that need to assert on
+    gateway-level audit events (authentication failures, validation failures,
+    pre-evaluation receipts, evaluator-unavailable, evaluation exceptions).
+
+    The evaluator is intentionally set up as *build_null_evaluator()* so that
+    successful-evaluation tests can also pass through.  Individual tests can
+    replace ``app.state.evaluator`` to exercise specific failure paths.
+    """
+    from basis_gateway.core.evaluator import build_null_evaluator
+
+    reset_readiness_state()
+    a = create_app()
+    with TestClient(a, raise_server_exceptions=False) as c:
+        writer = CapturingWriter(gateway_events)
+        a.state.audit_writer = writer
+        a.state.evaluator = build_null_evaluator()
         a.state.verifier = mock_verifier
         get_readiness_state().mark_ready("oidc")
         yield c

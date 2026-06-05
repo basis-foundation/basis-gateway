@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.config = config
         app.state.verifier = None
         app.state.evaluator = None
+        app.state.audit_writer = None
         log.info(
             "basis-gateway starting service=%s env=%s",
             config.service_name,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             # ── 5. Evaluator ─────────────────────────────────────────────────
             audit_writer = build_audit_writer()
+            app.state.audit_writer = audit_writer
             evaluator = build_evaluator(
                 engine=engine,
                 audit_writer=audit_writer,
