@@ -1,10 +1,8 @@
 # basis-gateway v0.1 Implementation Plan
 
-**Status**: Implemented  
+**Status**: Draft  
 **Date**: 2026-06-02  
 **Scope**: First buildable milestone of `basis-gateway`
-
-> **Note:** This document records the design decisions made before implementation. It is preserved as a historical reference. Where the implementation diverged from the original plan, notes are included inline. For the current runtime behavior see [`README.md`](../../README.md) and [`docs/audit-model.md`](../audit-model.md).
 
 ---
 
@@ -104,13 +102,15 @@ Request body (JSON):
 ```json
 {
   "request_id": "<optional caller-provided UUID>",
+  "subject_id": "<string>",
+  "subject_roles": ["<role>", ...],
   "action": "<action-name>",
   "resource_id": "<optional resource identifier>",
   "context": {}
 }
 ```
 
-> **Implementation note:** `subject_id` and `subject_roles` are not accepted in the request body. The `EvaluateRequest` schema rejects any request containing those fields with a 400 error. Subject identity is derived exclusively from the verified Bearer token.
+`subject_id` and `subject_roles` are derived from the verified JWT; the caller does not assert them. The gateway constructs `DecisionRequest` from normalized claims. Any caller-supplied subject fields are ignored in favor of the verified identity.
 
 Response body (JSON):
 
@@ -157,7 +157,7 @@ Map outcome to HTTP response:
 Return response
 ```
 
-> **Implementation note:** The gateway generates `correlation_id` unconditionally (UUID v4) at ingress via `CorrelationMiddleware`. Caller-supplied `X-Request-ID` or `X-Correlation-ID` headers are not trusted as the authoritative correlation ID. The gateway-generated ID is attached to `request.state.correlation_id`, passed into the kernel call, and returned in the `X-Correlation-ID` response header on every response.
+`correlation_id` is forwarded from the incoming `X-Request-ID` header when present, or generated for the request lifetime. It is included in the audit event and echoed in the response header.
 
 ---
 
@@ -232,7 +232,7 @@ response = enforcement_point.evaluate(
     request=decision_request,      # DecisionRequest constructed from normalized body
     subject=subject,               # Subject from subject_mapper
     identity_context=identity_ctx, # IdentityContext from subject_mapper
-    correlation_id=correlation_id, # gateway-generated UUID v4 from CorrelationMiddleware
+    correlation_id=correlation_id, # from X-Request-ID or generated
 )
 ```
 
@@ -267,11 +267,9 @@ The gateway's `AuditWriter` implementation (`audit/writer.py`) must:
 
 For v0.1, the `LogAuditWriter` from `basis_core.audit` is acceptable as the default implementation. If a structured audit sink is needed, implement a thin wrapper in `audit/writer.py`.
 
-The `AuditEvent` fields populated by `EnforcementPoint` include `request_id`, `correlation_id` (if passed), `subject_id`, `subject_type`, `subject_roles`, `action`, `resource_id`, `outcome`, `timestamp`, and `trace` (when available). The gateway passes `correlation_id` at the `evaluate()` call site.
+The `AuditEvent` fields populated by `EnforcementPoint` include `request_id`, `correlation_id` (if passed), `subject_id`, `subject_type`, `subject_roles`, `action`, `resource_id`, `outcome`, `timestamp`, and `trace` (when available). The gateway does not need to add to this — it passes `correlation_id` at the `evaluate()` call site.
 
-> **Implementation note:** The gateway also emits gateway-level `AuditEvent` records directly (via `basis_gateway.audit.gateway_events`) for outcomes that occur before the kernel is reached — authentication failures, validation failures, evaluator unavailability, and fail-closed evaluation exceptions. These use `event_type: SYSTEM_EVENT` and a stable action vocabulary. See `docs/audit-model.md` Section 4.5 for the full inventory.
-
-> **Open question (partially resolved):** Audit write failure behavior is now defined: `GatewayAuditWriter` catches all write exceptions, increments `failed_write_count`, and logs them as `ERROR`. Decisions are never altered. Whether `failed_write_count` should trigger readiness degradation after N failures remains unresolved — tracked as an open question in `docs/audit-model.md` Section 9.
+**Open question**: Whether audit write failure should block or fail the HTTP response is unresolved. The current `basis-core` contract says write failure must not propagate to the caller. Whether the gateway should detect a write failure after the fact (e.g., via a health check or counter) and surface it operationally is deferred. Record failures in logs for v0.1.
 
 ---
 
@@ -293,7 +291,7 @@ No authorization is granted during error conditions. The gateway fails closed on
 | `basis-core` returns `DENY` | 403 |
 | `basis-core` returns `NOT_APPLICABLE` | 403 |
 | `basis-core` returns `DENY` with `failure_reason` set | 403 (log the `failure_reason`) |
-| Audit write failure | Log error; increment `failed_write_count`; do not alter HTTP response |
+| Audit write failure | Log error; do not alter HTTP response (open question — see §9) |
 | Subject normalization failure | 401 or 400 depending on cause; fail closed |
 | Unexpected gateway exception | 500 with no authorization granted |
 
@@ -396,15 +394,13 @@ Adding any of the above during v0.1 implementation is out of scope regardless of
 
 ## 14. Open Questions
 
-> **Note:** Most v0.1 open questions have been resolved during implementation. They are preserved here for historical context.
+**Audit write failure disposition** — The `basis-core` `AuditWriter` contract requires that `write()` not raise. Whether the gateway should detect and surface write failures after the fact (e.g., counters, health degradation) is unresolved. For v0.1, log failures. Defer the operational surfacing question to a post-v0.1 design pass.
 
-**Audit write failure disposition** *(partially resolved)* — Behavior is now defined: `GatewayAuditWriter` catches all write exceptions, increments `failed_write_count`, and logs at `ERROR`. Decisions are never altered. Remaining open: whether `failed_write_count` should trigger readiness state degradation. Tracked in `docs/audit-model.md` Section 9.
+**Subject normalization claim mapping** — The specific JWT claim names for roles vary between providers (`realm_access.roles`, `roles`, `groups`, etc.). Whether the claim mapping is configuration-driven or code-driven for v0.1 is not decided. A hardcoded mapping with a configurable override is likely sufficient; a fully general claim expression language is out of scope.
 
-**Subject normalization claim mapping** *(resolved)* — Implemented as code-driven mapping in `auth/subject_mapper.py`: checks `realm_access.roles` first (Keycloak), falls back to a top-level `roles` claim. No configuration-driven expression language.
+**`NOT_APPLICABLE` response body** — Whether to distinguish `NOT_APPLICABLE` from `DENY` in the HTTP response body (passing through the `outcome` field) or always surface both as a generic `403` body is not decided. The safest choice is to pass through the `outcome` value from `basis-core` and let callers interpret it, while keeping the HTTP status code consistently 403.
 
-**`NOT_APPLICABLE` response body** *(resolved)* — `outcome` value from `basis-core` is passed through in the response body; HTTP status code is 403 in all non-ALLOW cases.
-
-**Policy rule loading** *(resolved)* — Policies are loaded from a JSON file at startup via `POLICY_PATH`. The file format is `{"rules": [{...}]}`. Loading is handled by `policy/loader.py`; startup fails if the file is missing or invalid.
+**Policy rule loading** — How `PolicyEngine` rules are loaded at startup is not defined here. For v0.1, hardcoded or environment-variable-driven rules are acceptable. A general policy configuration mechanism is out of scope.
 
 ---
 
