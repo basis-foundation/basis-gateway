@@ -199,3 +199,58 @@ def test_raw_jwt_claims_not_in_response(evaluate_client, mock_verifier):
     resp = _evaluate(evaluate_client, actions.READ_SENSOR_TELEMETRY)
     assert "secret@example.com" not in resp.text
     assert "fake" not in resp.text or "fake.token" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Policy version provenance
+# ---------------------------------------------------------------------------
+
+
+def test_policy_version_appears_in_allow_response(evaluate_client):
+    """ALLOW response includes the policy_version configured on the evaluator."""
+    # build_null_evaluator() uses policy_version="test"; that is what evaluate_client uses.
+    resp = _evaluate(evaluate_client, actions.READ_SENSOR_TELEMETRY)
+    assert resp.status_code == 200
+    assert resp.json()["policy_version"] == "test"
+
+
+def test_policy_version_appears_in_deny_response(evaluate_client, mock_verifier):
+    """DENY response also includes the policy_version."""
+    mock_verifier._claims["realm_access"] = {"roles": ["viewer"]}
+    resp = _evaluate(evaluate_client, actions.WRITE_HVAC_SETPOINT)
+    assert resp.status_code == 403
+    assert resp.json()["policy_version"] == "test"
+
+
+def test_policy_version_null_when_not_configured(evaluate_client):
+    """When no policy_version is set, response omits the field (exclude_none=True)."""
+    # mock_verifier default roles are ["admin", "viewer"]; use "admin" here.
+    ep = EnforcementPoint(
+        engine=PolicyEngine(policies=[RolePolicyRule({actions.READ_SENSOR_TELEMETRY: {"admin"}})]),
+        audit_writer=NullAuditWriter(),
+        # no policy_version
+    )
+    evaluate_client.app.state.evaluator = GatewayEvaluator(_enforcement_point=ep)
+    resp = _evaluate(evaluate_client, actions.READ_SENSOR_TELEMETRY)
+    assert resp.status_code == 200
+    assert "policy_version" not in resp.json()
+
+
+def test_gateway_evaluator_policy_version_uses_public_api(evaluate_client):
+    """GatewayEvaluator.policy_version must delegate to the kernel public property."""
+    evaluator: GatewayEvaluator = evaluate_client.app.state.evaluator
+    # The property must exist and return the same value as the kernel's own property.
+    assert evaluator.policy_version == evaluator._enforcement_point.policy_version
+
+
+def test_gateway_evaluator_policy_version_not_private_access():
+    """GatewayEvaluator.policy_version must not rely on _policy_version."""
+    import inspect
+
+    from basis_gateway.core import evaluator as ev_module
+
+    source = inspect.getsource(ev_module.GatewayEvaluator.policy_version.fget)  # type: ignore[union-attr]
+    assert "_policy_version" not in source, (
+        "GatewayEvaluator.policy_version must use the public "
+        "EnforcementPoint.policy_version API, not _policy_version"
+    )
