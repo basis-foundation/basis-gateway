@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 
 from basis_gateway.api.schemas import ErrorResponse, EvaluateRequest, EvaluateResponse
 from basis_gateway.audit.gateway_events import (
+    AUDIT_RECOVERY_PROBE,
     AUTHENTICATION_FAILED,
     EVALUATION_FAILED_CLOSED,
     EVALUATION_REQUESTED,
@@ -172,6 +173,46 @@ async def evaluate(
     audit_writer = getattr(request.app.state, "audit_writer", None)
     http_method = request.method
     request_path = request.url.path
+
+    # ── 0. Strict fail-closed check ──────────────────────────────────────────
+    # When AUDIT_FAIL_CLOSED=true and the audit writer is degraded, we first
+    # emit a lightweight probe event (no request content — correlation ID and
+    # path only).  If the probe write succeeds the writer self-heals and the
+    # request continues normally.  If the probe fails the writer stays degraded
+    # and we return 503.
+    #
+    # The probe is what makes strict-mode recovery automatic: without it, no
+    # audit write would ever fire in strict mode, so the writer could never
+    # exit the degraded state without a process restart.  The probe contains no
+    # authentication material and makes no authorization decision.
+    config = getattr(request.app.state, "config", None)
+    if (
+        config is not None
+        and getattr(config, "audit_fail_closed", False)
+        and audit_writer is not None
+        and getattr(audit_writer, "degraded", False)
+    ):
+        # Probe: attempt a safe write that carries no request secrets.
+        emit_gateway_event(
+            audit_writer,
+            action=AUDIT_RECOVERY_PROBE,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+        )
+
+        if getattr(audit_writer, "degraded", True):
+            # Probe failed — writer still degraded; block the request.
+            log.error(
+                "Audit writer degraded and AUDIT_FAIL_CLOSED=true; rejecting /v1/evaluate request"
+            )
+            return _service_unavailable(
+                "Audit pipeline degraded; evaluation suspended (fail-closed mode)"
+            )
+        # Probe succeeded — writer recovered; fall through to normal evaluation.
+        log.info(
+            "Audit writer recovered via fail-closed probe; proceeding with /v1/evaluate request"
+        )
 
     # ── 1. Parse and validate request body ──────────────────────────────────
     try:

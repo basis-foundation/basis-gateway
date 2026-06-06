@@ -167,6 +167,8 @@ See `.env.example` for the full list of supported variables.
 | `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
 | `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when `OIDC_ISSUER` is set. |
 | `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
+| `AUDIT_FAILURE_THRESHOLD` | `10` | Consecutive audit write failures before `audit_writer` readiness degrades. Must be ≥ 1. See [Audit failure escalation](#audit-failure-escalation). |
+| `AUDIT_FAIL_CLOSED` | `false` | When `true`, a degraded audit writer causes `/v1/evaluate` to return `503`. Default `false` degrades readiness only. |
 
 ---
 
@@ -203,6 +205,24 @@ Returns `200` when all required components are initialized. Returns `503` when a
 ```
 
 The `reason` field describes the first failed component. The `components` dict shows which components have been reached.
+
+When a policy is configured, `/ready` also tracks the `audit_writer` component. If consecutive audit write failures cross `AUDIT_FAILURE_THRESHOLD`, `audit_writer` is marked not-ready and `/ready` returns 503. Readiness restores automatically after the first successful write.
+
+---
+
+## Audit failure escalation
+
+`GatewayAuditWriter` tracks consecutive audit write failures. When the count reaches `AUDIT_FAILURE_THRESHOLD` (default: 10), the gateway marks the `audit_writer` readiness component not-ready and `/ready` returns 503. This signals to orchestrators and operators that the audit pipeline requires attention.
+
+**Recovery** is automatic: the first successful write after degradation resets the consecutive counter and restores readiness. No process restart is required.
+
+**Default behavior (Model B — readiness degradation):** `/v1/evaluate` continues to serve authorization requests even when the audit writer is degraded. Appropriate for OT environments (hospitals, industrial facilities, commercial buildings) where authorization availability is a safety requirement.
+
+**Strict fail-closed mode (Model C — `AUDIT_FAIL_CLOSED=true`):** when enabled, a degraded audit writer additionally causes `/v1/evaluate` to return `503`. No evaluation proceeds until the audit pipeline recovers. Appropriate for strict-compliance deployments where an unrecorded authorization decision is a regulatory violation.
+
+> **Important**: neither mode can cause the kernel to produce an ALLOW decision it would not otherwise have produced. Audit failure never grants access.
+
+See `docs/audit-failure-escalation.md` for the complete architecture decision, failure scenarios, and security analysis.
 
 ---
 

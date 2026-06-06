@@ -247,6 +247,8 @@ The gateway wraps `basis-core`'s `LogAuditWriter` in a `GatewayAuditWriter`.
 - Exceptions from the inner writer are caught and never propagated.
 - A failed write is logged as `ERROR` via the standard Python logger.
 - A monotonic `failed_write_count` counter is incremented on each failure.
+- A `consecutive_failure_count` counter tracks consecutive failures since the last
+  successful write; it resets to zero on any successful write.
 - The authorization decision is **not reversed or altered**.
 - The HTTP response is **not affected**.
 
@@ -254,14 +256,23 @@ The gateway wraps `basis-core`'s `LogAuditWriter` in a `GatewayAuditWriter`.
 `GatewayAuditWriter.write()` raises despite its own guard, the `EnforcementPoint`
 catches the exception and logs it. The decision is still returned to the caller.
 
-**Current guarantee**: audit write failures are visible in logs and in
-`failed_write_count`, but they do not affect authorization outcomes. Access is
-never granted or denied based on whether the audit write succeeded.
+**Failure escalation (implemented)**: when `consecutive_failure_count` reaches the
+configured `AUDIT_FAILURE_THRESHOLD` (default: 10), `GatewayAuditWriter` marks the
+`audit_writer` readiness component not-ready, causing `/ready` to return 503. This
+is the default Model B behavior. See `docs/audit-failure-escalation.md` for the full
+escalation strategy, failure scenarios, and configuration reference.
 
-**Ambiguity**: there is no alerting threshold on `failed_write_count` in the current
-implementation. Whether sustained audit write failures should escalate to a readiness
-state change (i.e., `/ready` returning 503 after N failures) is an open question; see
-Section 9.
+**Recovery**: automatic. The first successful write after degradation resets
+`consecutive_failure_count` and marks `audit_writer` ready again. No operator
+action or process restart is required.
+
+**Strict fail-closed mode** (`AUDIT_FAIL_CLOSED=true`): when enabled, a degraded
+audit writer also causes `/v1/evaluate` to return 503 until recovery. This mode is
+opt-in; the default is readiness degradation only.
+
+**Invariant**: audit write failures never grant or deny access. Neither the default
+Model B behavior nor the optional fail-closed mode can cause the kernel to produce
+an ALLOW decision it would not otherwise have produced.
 
 ---
 
@@ -347,10 +358,11 @@ architecture decision.
 The following are known gaps or unresolved questions in the current audit model.
 They are out of scope for this branch and should be tracked separately.
 
-**Audit failure escalation threshold**
-`GatewayAuditWriter.failed_write_count` tracks failures but does not trigger any
-operational response. Whether sustained audit write failures should affect readiness
-state (e.g., mark `evaluator_initialized` not-ready after N failures) is unresolved.
+**Audit failure escalation threshold** *(resolved)*
+Implemented in `feature/audit-failure-escalation`. `GatewayAuditWriter` now tracks
+`consecutive_failure_count` and degrades the `audit_writer` readiness component when
+the threshold is crossed. See `docs/audit-failure-escalation.md` for the full design
+and `AUDIT_FAILURE_THRESHOLD` / `AUDIT_FAIL_CLOSED` for configuration.
 
 **Audit correlation model alignment with `basis-architecture`**
 The gateway generates its own `correlation_id` and does not propagate one from callers.

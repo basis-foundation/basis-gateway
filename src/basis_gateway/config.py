@@ -50,6 +50,15 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
     # Required when evaluation endpoint is enabled (OIDC_ISSUER set).
     policy_path: str | None = Field(default=None, alias="POLICY_PATH")
 
+    # Audit failure escalation configuration.
+    # Number of consecutive audit write failures before readiness degrades.
+    # Must be >= 1. Default: 10.
+    audit_failure_threshold: int = Field(default=10, alias="AUDIT_FAILURE_THRESHOLD", ge=1)
+
+    # When True, a degraded audit writer causes /v1/evaluate to return 503.
+    # When False (default), only /ready is affected by audit degradation.
+    audit_fail_closed: bool = Field(default=False, alias="AUDIT_FAIL_CLOSED")
+
     # When True, the evaluation endpoint is considered enabled and OIDC + policy are required.
     # Derived at validation time; not a direct env var.
     @property

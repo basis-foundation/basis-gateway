@@ -52,6 +52,13 @@ EVALUATOR_UNAVAILABLE = "gateway.evaluator_unavailable"
 #: Evaluation raised unexpectedly; request failed closed.
 EVALUATION_FAILED_CLOSED = "gateway.evaluation_failed_closed"
 
+#: Lightweight probe emitted by the fail-closed check when the audit writer is
+#: degraded.  If this write succeeds, the writer recovers automatically and
+#: the request continues.  If it fails, the writer remains degraded and the
+#: request is rejected with 503.  Contains no request content — only the
+#: correlation ID and request path are recorded.
+AUDIT_RECOVERY_PROBE = "gateway.audit_recovery_probe"
+
 # ---------------------------------------------------------------------------
 # Stable reason category vocabulary
 # ---------------------------------------------------------------------------
