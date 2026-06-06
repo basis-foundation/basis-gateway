@@ -62,6 +62,7 @@ class ReadyResponse(BaseModel):
     service: str
     components: dict[str, bool] | None = None
     reason: str | None = None
+    reasons: dict[str, str] | None = None
 
 
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
@@ -82,6 +83,7 @@ def ready() -> JSONResponse:
                 components=components or None,
             ).model_dump(exclude_none=True),
         )
+    all_reasons = state.all_reasons or None
     return JSONResponse(
         status_code=503,
         content=ReadyResponse(
@@ -89,6 +91,7 @@ def ready() -> JSONResponse:
             service=_SERVICE_NAME,
             components=components or None,
             reason=state.reason or "application not initialized",
+            reasons=all_reasons or None,
         ).model_dump(exclude_none=True),
     )
 
