@@ -58,6 +58,19 @@ class ReadinessState:
             return ""
 
     @property
+    def all_reasons(self) -> dict[str, str]:
+        """Reasons for every not-ready component, keyed by component name.
+
+        Returns an empty dict when the service is fully ready.
+        """
+        with self._lock:
+            return {
+                component: self._reasons.get(component, f"{component} not ready")
+                for component, ready in self._components.items()
+                if not ready
+            }
+
+    @property
     def components(self) -> dict[str, bool]:
         """Snapshot of current component readiness states."""
         with self._lock:

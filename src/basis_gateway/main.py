@@ -58,11 +58,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.evaluator = None
         app.state.audit_writer = None
         log.info(
-            "basis-gateway starting service=%s env=%s",
+            "basis-gateway starting service=%s env=%s log_level=%s",
             config.service_name,
             config.environment,
+            config.log_level,
         )
         state.mark_ready("configuration_loaded")
+        log.info("Configuration loaded")
 
         # ── 2. Fail-early validation ─────────────────────────────────────────
         # Raises EvaluationConfigError when evaluation is enabled but required
@@ -70,36 +72,69 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             validate_evaluation_config(config)
         except EvaluationConfigError as exc:
-            log.error("Configuration validation failed: %s", exc)
+            log.error(
+                "Configuration validation failed [configuration_loaded]: %s — "
+                "check OIDC_ISSUER and POLICY_PATH environment variables",
+                exc,
+            )
             state.mark_not_ready(reason=str(exc), component="configuration_loaded")
             # Do not yield further — the caller catches all exceptions below.
             raise
 
         # ── 3. OIDC verifier ─────────────────────────────────────────────────
         if config.oidc_issuer:
+            from basis_gateway.auth.errors import JWKSFetchError, OIDCDiscoveryError
             from basis_gateway.auth.oidc import OIDCVerifier
 
+            log.info("Initializing OIDC verifier issuer=%s", config.oidc_issuer)
             verifier = OIDCVerifier.from_config(
                 issuer=config.oidc_issuer,
                 audience=config.oidc_audience,
                 jwks_uri_override=config.oidc_jwks_uri,
                 cache_ttl_seconds=config.jwks_cache_ttl_seconds,
             )
-            verifier.initialize()
+            try:
+                verifier.initialize()
+            except OIDCDiscoveryError as exc:
+                log.error(
+                    "OIDC discovery failed [oidc_configured]: %s — "
+                    "check that OIDC_ISSUER is reachable and the discovery endpoint "
+                    "(%s/.well-known/openid-configuration) returns a valid document",
+                    exc,
+                    config.oidc_issuer,
+                )
+                state.mark_not_ready(reason=str(exc), component="oidc_configured")
+                raise
+            except JWKSFetchError as exc:
+                log.error(
+                    "JWKS fetch failed [jwks_available]: %s — "
+                    "check that the JWKS endpoint is reachable from this host; "
+                    "set OIDC_JWKS_URI to override the discovered endpoint",
+                    exc,
+                )
+                state.mark_not_ready(reason=str(exc), component="jwks_available")
+                raise
             app.state.verifier = verifier
             state.mark_ready("oidc_configured")
             state.mark_ready("jwks_available")
             log.info("OIDC verifier initialized issuer=%s", config.oidc_issuer)
         else:
             # Evaluation disabled — OIDC/JWKS components are not required.
-            log.warning("OIDC_ISSUER not configured; /v1/evaluate will reject all requests")
+            log.warning(
+                "OIDC_ISSUER not set — evaluation disabled; set OIDC_ISSUER to enable /v1/evaluate"
+            )
 
         # ── 4. Policy loading ────────────────────────────────────────────────
         if config.policy_path:
+            log.info("Loading policy from %s", config.policy_path)
             try:
                 engine = load_policy_engine(config.policy_path)
             except PolicyLoadError as exc:
-                log.error("Policy loading failed: %s", exc)
+                log.error(
+                    "Policy loading failed [policy_loaded]: %s — "
+                    "check that POLICY_PATH points to a valid JSON policy file",
+                    exc,
+                )
                 state.mark_not_ready(reason=str(exc), component="policy_loaded")
                 raise
             state.mark_ready("policy_loaded")
@@ -112,6 +147,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             app.state.audit_writer = audit_writer
             state.mark_ready("audit_writer")
+            log.info(
+                "Audit writer initialized threshold=%d fail_closed=%s",
+                config.audit_failure_threshold,
+                config.audit_fail_closed,
+            )
             evaluator = build_evaluator(
                 engine=engine,
                 audit_writer=audit_writer,
@@ -119,16 +159,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             app.state.evaluator = evaluator
             state.mark_ready("evaluator_initialized")
-            log.info("GatewayEvaluator ready policy_version=%s", config.policy_version)
+            log.info("Evaluator initialized policy_version=%s", config.policy_version)
         else:
             # No policy path — evaluator stays None.
             # /v1/evaluate will return 503 if called.
-            log.warning("POLICY_PATH not configured; evaluator not initialized")
+            log.warning(
+                "POLICY_PATH not set — evaluator not initialized; "
+                "set POLICY_PATH to enable authorization evaluation"
+            )
 
         log.info("basis-gateway ready")
 
     except Exception as exc:
-        log.error("Startup failed: %s", exc)
+        log.error("Startup failed [%s]: %s", type(exc).__name__, exc)
         # Mark app-level not-ready only if no component-level reason was set.
         if not any(not v for v in state.components.values()):
             state.mark_not_ready(reason=str(exc))
