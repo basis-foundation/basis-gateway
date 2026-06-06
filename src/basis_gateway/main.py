@@ -106,8 +106,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.info("Policy loaded path=%s", config.policy_path)
 
             # ── 5. Evaluator ─────────────────────────────────────────────────
-            audit_writer = build_audit_writer()
+            audit_writer = build_audit_writer(
+                readiness_state=state,
+                failure_threshold=config.audit_failure_threshold,
+            )
             app.state.audit_writer = audit_writer
+            state.mark_ready("audit_writer")
             evaluator = build_evaluator(
                 engine=engine,
                 audit_writer=audit_writer,

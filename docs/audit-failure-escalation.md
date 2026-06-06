@@ -399,6 +399,22 @@ When `AUDIT_FAIL_CLOSED=true` (or equivalent configuration):
 This mode should be documented clearly so operators can make an informed choice.
 The default must remain Model B.
 
+**Strict-mode recovery mechanism (implementation note)**
+
+A naive implementation of strict fail-closed creates a recovery deadlock: if the
+check blocks all requests before any audit write fires, no successful write can ever
+occur and the gateway remains degraded indefinitely without a restart.
+
+To prevent this, the fail-closed check emits a lightweight probe event
+(`gateway.audit_recovery_probe`) before returning 503. The probe contains only the
+correlation ID and request path — no authentication material. If the probe write
+succeeds, the writer self-heals and the request continues to normal evaluation. If
+it fails, the writer remains degraded and 503 is returned.
+
+This means recovery is automatic: when the audit backend heals, the next incoming
+request will probe it, the writer will recover, and evaluation will resume — with no
+operator intervention and no process restart required.
+
 ---
 
 ### 5.5 Logging behavior
@@ -429,13 +445,28 @@ must be structured consistently so that log-based alerting pipelines can match t
 
 Recovery is automatic and requires no operator intervention or process restart.
 
-The recovery path:
+The recovery path (Model B — readiness degradation only):
 
 1. `GatewayAuditWriter.write()` is called and the write succeeds.
 2. If the previous state was degraded (consecutive count ≥ threshold), log recovery.
 3. Reset the consecutive failure counter to zero.
 4. Call `readiness_state.mark_ready(component="audit_writer")`.
-5. If `AUDIT_FAIL_CLOSED=true` was active, `/v1/evaluate` resumes serving requests.
+5. `/ready` returns 200 once all other components are also ready.
+
+The recovery path (Model C — `AUDIT_FAIL_CLOSED=true`):
+
+Recovery uses the same `GatewayAuditWriter.write()` success path, but the triggering
+mechanism is the fail-closed probe rather than a normal request write:
+
+1. A request arrives at `/v1/evaluate` while the writer is degraded.
+2. The fail-closed check emits a `gateway.audit_recovery_probe` event — no request
+   content, no auth material.
+3. If the probe write succeeds, `GatewayAuditWriter.write()` detects the degraded
+   state, logs recovery, resets the counter, and calls `mark_ready("audit_writer")`.
+4. The fail-closed check sees `degraded=False` and allows the request to continue
+   to normal evaluation.
+5. Steps 2–4 happen in the same synchronous request cycle — the caller that triggers
+   recovery receives a normal response, not a 503.
 
 This means readiness automatically restores as soon as one successful write occurs.
 This is intentional: the condition being tracked is "is the audit path currently broken?"
