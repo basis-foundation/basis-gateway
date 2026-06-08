@@ -4,7 +4,7 @@ Tracks whether the application and its required components are ready to
 serve requests. All registered components must be ready for the overall
 state to be ready.
 
-Phase 4 components tracked:
+Components tracked:
   - "configuration_loaded" — startup config validated successfully
   - "oidc_configured"      — OIDC verifier initialized (optional when eval disabled)
   - "jwks_available"       — JWKS endpoint reachable and keys loaded

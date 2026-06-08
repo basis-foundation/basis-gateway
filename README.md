@@ -248,7 +248,7 @@ curl -X POST http://localhost:8000/v1/evaluate \
   "request_id": "a1b2c3d4-...",
   "outcome": "allow",
   "reason": "Subject holds a role permitted for 'read:sensor:telemetry'.",
-  "policy_version": null
+  "correlation_id": "c9d8e7f6-..."
 }
 ```
 
@@ -258,9 +258,11 @@ curl -X POST http://localhost:8000/v1/evaluate \
   "request_id": "a1b2c3d4-...",
   "outcome": "deny",
   "reason": "Action 'read:sensor:telemetry' requires one of ['admin', 'operator', 'viewer']; subject holds ['guest'].",
-  "policy_version": null
+  "correlation_id": "c9d8e7f6-..."
 }
 ```
+
+`policy_version` is included in the response body when `POLICY_VERSION` is configured; it is omitted when not set. `correlation_id` is always present and matches the `X-Correlation-ID` response header.
 
 The `X-Correlation-ID` response header is set on all gateway responses. It contains a
 gateway-generated UUIDv4. Caller-supplied `X-Correlation-ID` request headers are ignored
@@ -300,7 +302,7 @@ Action strings must match the action constants defined in `basis-core`. See `pol
 
 ## What is intentionally out of scope
 
-The following are not implemented and will not be added without a new phase decision:
+The following are not implemented and will not be added without a deliberate scope decision:
 
 - Policy authoring UI or API
 - Dynamic policy reload without restart
@@ -393,8 +395,9 @@ tests/          — see pytest output for current count; no live IdP required
 
 ## Related documents
 
+- [`docs/release-readiness.md`](docs/release-readiness.md) — v0.1 scope, known limitations, out-of-scope items, architecture invariants confirmed
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
-- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, open questions
+- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, known limitations
 - [`docs/audit-failure-escalation.md`](docs/audit-failure-escalation.md) — audit failure escalation architecture, failure scenarios, security analysis, and Model B/C trade-offs
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
