@@ -273,9 +273,9 @@ def test_fail_closed_503_message_is_clear(evaluate_client):
     assert resp.status_code == 503
     body = resp.json()
     # Message must explain the situation clearly
-    detail = body.get("detail", "").lower()
-    assert "audit" in detail or "degraded" in detail
-    assert "fail-closed" in detail or "suspended" in detail
+    message = body.get("message", "").lower()
+    assert "audit" in message or "degraded" in message
+    assert "fail-closed" in message or "suspended" in message
 
 
 def test_fail_closed_503_does_not_expose_secrets(evaluate_client):

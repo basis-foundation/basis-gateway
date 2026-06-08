@@ -194,16 +194,21 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.add_middleware(CorrelationMiddleware)
 
-    # Convert Pydantic validation errors to 400 instead of 422.
+    # Convert FastAPI/Pydantic validation errors to 400 instead of 422.
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         errors = exc.errors()
-        detail = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        message = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        correlation_id: str | None = getattr(request.state, "correlation_id", None)
         return JSONResponse(
             status_code=400,
-            content=ErrorResponse(error="bad_request", detail=detail).model_dump(exclude_none=True),
+            content=ErrorResponse(
+                error="validation_failed",
+                message=message,
+                correlation_id=correlation_id,
+            ).model_dump(exclude_none=True),
         )
 
     return app

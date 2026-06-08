@@ -63,6 +63,7 @@ class ReadyResponse(BaseModel):
     components: dict[str, bool] | None = None
     reason: str | None = None
     reasons: dict[str, str] | None = None
+    correlation_id: str | None = None
 
 
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
@@ -70,8 +71,13 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", service=_SERVICE_NAME)
 
 
-@router.get("/ready", summary="Readiness probe")
-def ready() -> JSONResponse:
+@router.get(
+    "/ready",
+    summary="Readiness probe",
+    response_model=ReadyResponse,
+    responses={503: {"model": ReadyResponse}},
+)
+def ready(request: Request) -> JSONResponse:
     state = get_readiness_state()
     components = state.components or None
     if state.is_ready:
@@ -84,6 +90,7 @@ def ready() -> JSONResponse:
             ).model_dump(exclude_none=True),
         )
     all_reasons = state.all_reasons or None
+    correlation_id: str = request.state.correlation_id
     return JSONResponse(
         status_code=503,
         content=ReadyResponse(
@@ -92,6 +99,7 @@ def ready() -> JSONResponse:
             components=components or None,
             reason=state.reason or "application not initialized",
             reasons=all_reasons or None,
+            correlation_id=correlation_id,
         ).model_dump(exclude_none=True),
     )
 
@@ -99,37 +107,91 @@ def ready() -> JSONResponse:
 # ---------------------------------------------------------------------------
 # Response helpers
 # ---------------------------------------------------------------------------
+# Each helper accepts a correlation_id so the response body and the
+# X-Correlation-ID header (set by CorrelationMiddleware) are consistent.
+# ---------------------------------------------------------------------------
 
 
-def _auth_error(detail: str) -> JSONResponse:
+def _authentication_required(message: str, correlation_id: str) -> JSONResponse:
+    """401 — no Bearer token was presented or the Authorization header is malformed."""
     return JSONResponse(
         status_code=401,
-        content=ErrorResponse(error="authentication_failed", detail=detail).model_dump(
-            exclude_none=True
-        ),
+        content=ErrorResponse(
+            error="authentication_required",
+            message=message,
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
     )
 
 
-def _bad_request(detail: str) -> JSONResponse:
+def _authentication_failed(message: str, correlation_id: str) -> JSONResponse:
+    """401 — a Bearer token was present but could not be verified or mapped."""
+    return JSONResponse(
+        status_code=401,
+        content=ErrorResponse(
+            error="authentication_failed",
+            message=message,
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _validation_failed(message: str, correlation_id: str) -> JSONResponse:
+    """400 — request body failed schema validation."""
     return JSONResponse(
         status_code=400,
-        content=ErrorResponse(error="bad_request", detail=detail).model_dump(exclude_none=True),
+        content=ErrorResponse(
+            error="validation_failed",
+            message=message,
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
     )
 
 
-def _service_unavailable(detail: str) -> JSONResponse:
+def _evaluator_unavailable(correlation_id: str) -> JSONResponse:
+    """503 — the evaluator is not initialized; the service is not ready to evaluate."""
     return JSONResponse(
         status_code=503,
-        content=ErrorResponse(error="service_unavailable", detail=detail).model_dump(
-            exclude_none=True
-        ),
+        content=ErrorResponse(
+            error="evaluator_unavailable",
+            message="Evaluator not initialized",
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
     )
 
 
-def _internal_error() -> JSONResponse:
+def _audit_fail_closed(correlation_id: str) -> JSONResponse:
+    """503 — audit pipeline degraded and AUDIT_FAIL_CLOSED=true; evaluation suspended."""
+    return JSONResponse(
+        status_code=503,
+        content=ErrorResponse(
+            error="audit_fail_closed",
+            message="Audit pipeline degraded; evaluation suspended (fail-closed mode)",
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _evaluation_failed_closed(correlation_id: str) -> JSONResponse:
+    """500 — unexpected error during evaluation; request failed closed."""
     return JSONResponse(
         status_code=500,
-        content=ErrorResponse(error="internal_error").model_dump(exclude_none=True),
+        content=ErrorResponse(
+            error="evaluation_failed_closed",
+            message="Evaluation failed; request denied (fail-closed)",
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _internal_error(correlation_id: str) -> JSONResponse:
+    """500 — unexpected internal error not otherwise classified."""
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(
+            error="internal_error",
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
     )
 
 
@@ -146,6 +208,14 @@ def _internal_error() -> JSONResponse:
         "Subject identity is derived exclusively from the Bearer token — "
         "do not provide subject_id or subject_roles in the request body."
     ),
+    response_model=EvaluateResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": EvaluateResponse},
+        500: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
 )
 async def evaluate(
     request: Request,
@@ -209,9 +279,7 @@ async def evaluate(
             log.error(
                 "Audit writer degraded and AUDIT_FAIL_CLOSED=true; rejecting /v1/evaluate request"
             )
-            return _service_unavailable(
-                "Audit pipeline degraded; evaluation suspended (fail-closed mode)"
-            )
+            return _audit_fail_closed(correlation_id)
         # Probe succeeded — writer recovered; fall through to normal evaluation.
         log.info(
             "Audit writer recovered via fail-closed probe; proceeding with /v1/evaluate request"
@@ -223,7 +291,7 @@ async def evaluate(
         eval_request = EvaluateRequest.model_validate_json(body_bytes)
     except ValidationError as exc:
         errors = exc.errors(include_url=False)
-        detail = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        message = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
         # Pydantic v2 wraps JSON parse errors as ValidationError with type
         # "json_invalid". Distinguish these from field-level schema errors so
         # the audit reason accurately reflects the failure category.
@@ -236,7 +304,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_MALFORMED_BODY if is_json_error else REASON_INVALID_FIELDS,
         )
-        return _bad_request(detail)
+        return _validation_failed(message, correlation_id)
     except Exception:
         emit_gateway_event(
             audit_writer,
@@ -246,12 +314,13 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_MALFORMED_BODY,
         )
-        return _bad_request("Malformed request body")
+        return _validation_failed("Malformed request body", correlation_id)
 
     # ── 2. Bearer extraction ─────────────────────────────────────────────────
     try:
         token = extract_bearer_token(authorization)
     except TokenExtractionError as exc:
+        # Missing or malformed Authorization header — no token was presented.
         emit_gateway_event(
             audit_writer,
             action=AUTHENTICATION_FAILED,
@@ -260,7 +329,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_MISSING_TOKEN,
         )
-        return _auth_error(str(exc))
+        return _authentication_required(str(exc), correlation_id)
     except AuthenticationError as exc:
         emit_gateway_event(
             audit_writer,
@@ -270,7 +339,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_MISSING_TOKEN,
         )
-        return _auth_error(str(exc))
+        return _authentication_required(str(exc), correlation_id)
 
     # ── 3. JWT verification ──────────────────────────────────────────────────
     verifier = getattr(request.app.state, "verifier", None)
@@ -284,7 +353,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_VERIFIER_NOT_CONFIGURED,
         )
-        return _auth_error("Authentication not configured")
+        return _authentication_failed("Authentication not configured", correlation_id)
 
     try:
         claims: dict[str, Any] = verifier.verify(token)
@@ -298,7 +367,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_INVALID_TOKEN,
         )
-        return _auth_error("Token verification failed")
+        return _authentication_failed("Token verification failed", correlation_id)
     except Exception:
         log.exception("Unexpected error during JWT verification")
         emit_gateway_event(
@@ -309,7 +378,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_INVALID_TOKEN,
         )
-        return _auth_error("Token verification failed")
+        return _authentication_failed("Token verification failed", correlation_id)
 
     # ── 4. Subject mapping ───────────────────────────────────────────────────
     try:
@@ -324,7 +393,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_IDENTITY_NORMALIZATION_FAILED,
         )
-        return _auth_error("Identity normalization failed")
+        return _authentication_failed("Identity normalization failed", correlation_id)
     except Exception:
         log.exception("Unexpected error during subject mapping")
         emit_gateway_event(
@@ -335,7 +404,7 @@ async def evaluate(
             request_path=request_path,
             reason=REASON_IDENTITY_NORMALIZATION_FAILED,
         )
-        return _auth_error("Identity normalization failed")
+        return _authentication_failed("Identity normalization failed", correlation_id)
 
     # ── 5. Get evaluator ─────────────────────────────────────────────────────
     evaluator: GatewayEvaluator | None = getattr(request.app.state, "evaluator", None)
@@ -349,7 +418,7 @@ async def evaluate(
             reason=REASON_EVALUATOR_NOT_INITIALIZED,
             subject_id=normalized_subject.subject_id,
         )
-        return _service_unavailable("Evaluator not initialized")
+        return _evaluator_unavailable(correlation_id)
 
     # ── 6. Build request ID ──────────────────────────────────────────────────
     request_id = eval_request.request_id or correlation_id
@@ -385,7 +454,7 @@ async def evaluate(
     except ValidationError as exc:
         # DecisionRequest validation failed (invalid action/resource_id format).
         errors = exc.errors(include_url=False)
-        detail = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        message = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
         emit_gateway_event(
             audit_writer,
             action=EVALUATION_FAILED_CLOSED,
@@ -396,7 +465,7 @@ async def evaluate(
             policy_version=policy_version,
             subject_id=normalized_subject.subject_id,
         )
-        return _bad_request(detail)
+        return _validation_failed(message, correlation_id)
     except Exception:
         log.exception("Unexpected error during evaluation")
         emit_gateway_event(
@@ -409,7 +478,7 @@ async def evaluate(
             policy_version=policy_version,
             subject_id=normalized_subject.subject_id,
         )
-        return _internal_error()
+        return _evaluation_failed_closed(correlation_id)
 
     # ── 9. Map outcome to HTTP response ──────────────────────────────────────
     outcome = decision.outcome
@@ -419,6 +488,7 @@ async def evaluate(
         outcome=outcome.value,
         reason=decision.reason,
         policy_version=decision.policy_version,
+        correlation_id=correlation_id,
     )
 
     status_code = 200 if outcome == DecisionOutcome.ALLOW else 403

@@ -49,16 +49,38 @@ class EvaluateRequest(BaseModel):
 
 
 class EvaluateResponse(BaseModel):
-    """Response body for ``POST /v1/evaluate``."""
+    """Response body for ``POST /v1/evaluate``.
+
+    Returned for both ALLOW (200) and DENY/NOT_APPLICABLE (403).
+    ``correlation_id`` matches the ``X-Correlation-ID`` response header and
+    any gateway audit events emitted for this request.
+    """
 
     request_id: str
     outcome: str  # "allow", "deny", or "not_applicable"
     reason: str
     policy_version: str | None = None
+    correlation_id: str | None = None
 
 
 class ErrorResponse(BaseModel):
-    """Generic error response body."""
+    """Canonical error response body.
+
+    ``error`` is a stable machine-readable code (see below).
+    ``message`` is a human-readable explanation safe to surface to callers.
+    ``correlation_id`` matches the ``X-Correlation-ID`` response header and any
+    gateway audit events emitted for this request.
+
+    Stable error codes:
+      authentication_required  — no Bearer token was presented
+      authentication_failed    — token present but invalid or unverifiable
+      validation_failed        — request body failed schema validation
+      evaluator_unavailable    — evaluator not initialized (service not ready)
+      evaluation_failed_closed — unexpected error during evaluation (fail-closed)
+      audit_fail_closed        — audit pipeline degraded; evaluation suspended
+      internal_error           — unexpected internal error
+    """
 
     error: str
-    detail: str | None = None
+    message: str | None = None
+    correlation_id: str | None = None

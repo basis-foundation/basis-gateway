@@ -204,6 +204,42 @@ The path must reference `../basis-core/src/basis_core/__init__.py`, not `.venv/s
 
 ---
 
+## API error response format
+
+Every error response from basis-gateway uses a consistent JSON shape:
+
+```json
+{
+  "error": "string_code",
+  "message": "Human-readable explanation",
+  "correlation_id": "uuid4"
+}
+```
+
+- `error` — stable machine-readable code; see table below.
+- `message` — safe to surface to operators; never contains tokens, stack traces, or raw exception text.
+- `correlation_id` — matches the `X-Correlation-ID` response header and any gateway audit events emitted for this request.
+
+### Stable error codes
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `authentication_required` | 401 | No Bearer token was presented, or the `Authorization` header is malformed. |
+| `authentication_failed` | 401 | A token was present but failed verification, or subject identity could not be derived. |
+| `validation_failed` | 400 | Request body failed schema validation. |
+| `evaluator_unavailable` | 503 | The evaluator is not initialized; the service is not ready to evaluate requests. |
+| `evaluation_failed_closed` | 500 | An unexpected error occurred during evaluation; the request was denied (fail-closed). |
+| `audit_fail_closed` | 503 | The audit pipeline is degraded and `AUDIT_FAIL_CLOSED=true`; evaluation is suspended. |
+| `internal_error` | 500 | Unexpected internal error not otherwise classified. |
+
+Authorization denials (`DENY`, `NOT_APPLICABLE`) return HTTP 403 with the `EvaluateResponse` body (including `outcome`, `reason`, `policy_version`, and `correlation_id`) rather than an `ErrorResponse`.
+
+### Correlating errors with audit events
+
+Use the `correlation_id` from the response body (or `X-Correlation-ID` header) to find the corresponding gateway audit event in your audit log. The audit event captures the failure category (`reason`), subject identity, and policy version even for pre-evaluation failures such as authentication errors.
+
+---
+
 ## mypy cache errors
 
 **Symptom:** `mypy src` fails with stale cache errors or unexpected `[attr-defined]` / `[import]` errors that disappear when the cache is cleared.
