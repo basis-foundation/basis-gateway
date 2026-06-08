@@ -26,10 +26,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/basis-core
-          path: ../basis-core
+          path: basis-core
 
       - name: Install basis-core (editable)
-        run: pip install -e ../basis-core
+        run: pip install -e basis-core
 
       - name: Install basis-gateway with dev dependencies
         run: pip install -e ".[dev]"
