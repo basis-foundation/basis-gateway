@@ -2,7 +2,11 @@
 
 `basis-gateway` is the authentication, identity normalization, and HTTP enforcement boundary for the BASIS ecosystem. It sits between external callers and `basis-core`. It does not evaluate policy — it delegates every authorization decision to `basis-core` via the stable public API and enforces the result at the HTTP boundary.
 
-This is a private implementation repository. The service is not production-ready.
+This repository contains the reference implementation of basis-gateway.
+
+The project is released as v0.1.0 and is intended for evaluation,
+experimentation, and community feedback. Production adoption should
+be preceded by environment-specific validation and security review.
 
 ---
 
@@ -115,6 +119,7 @@ POLICY_PATH=policies/default.json
 ```
 
 With these three variables set, the gateway will:
+
 1. Discover the JWKS endpoint from the issuer
 2. Load `policies/default.json`
 3. Initialize the evaluator
@@ -126,21 +131,21 @@ See `.env.example` for the full list of supported variables.
 
 ## Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8000` | Bind port |
-| `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `ENVIRONMENT` | `local` | Deployment environment (`local`, `development`, `staging`, `production`) |
-| `SERVICE_NAME` | `basis-gateway` | Service identifier in health/ready responses |
-| `OIDC_ISSUER` | _(none)_ | Token issuer URL; required to enable `/v1/evaluate`. Used for OIDC discovery and `iss` validation. |
-| `OIDC_AUDIENCE` | _(none)_ | Expected `aud` claim. If unset, audience is not validated. |
-| `OIDC_JWKS_URI` | _(none)_ | Override JWKS endpoint; skips OIDC discovery when set. |
-| `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
-| `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when `OIDC_ISSUER` is set. |
-| `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
-| `AUDIT_FAILURE_THRESHOLD` | `10` | Consecutive audit write failures before `audit_writer` readiness degrades. Must be ≥ 1. See [Audit failure escalation](#audit-failure-escalation). |
-| `AUDIT_FAIL_CLOSED` | `false` | When `true`, a degraded audit writer causes `/v1/evaluate` to return `503`. Default `false` degrades readiness only. |
+| Variable                  | Default         | Description                                                                                                                                        |
+| ------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HOST`                    | `0.0.0.0`       | Bind address                                                                                                                                       |
+| `PORT`                    | `8000`          | Bind port                                                                                                                                          |
+| `LOG_LEVEL`               | `INFO`          | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`)                                                                                 |
+| `ENVIRONMENT`             | `local`         | Deployment environment (`local`, `development`, `staging`, `production`)                                                                           |
+| `SERVICE_NAME`            | `basis-gateway` | Service identifier in health/ready responses                                                                                                       |
+| `OIDC_ISSUER`             | _(none)_        | Token issuer URL; required to enable `/v1/evaluate`. Used for OIDC discovery and `iss` validation.                                                 |
+| `OIDC_AUDIENCE`           | _(none)_        | Expected `aud` claim. If unset, audience is not validated.                                                                                         |
+| `OIDC_JWKS_URI`           | _(none)_        | Override JWKS endpoint; skips OIDC discovery when set.                                                                                             |
+| `JWKS_CACHE_TTL_SECONDS`  | `300`           | JWKS in-memory cache TTL in seconds.                                                                                                               |
+| `POLICY_PATH`             | _(none)_        | Path to JSON policy file. Required when `OIDC_ISSUER` is set.                                                                                      |
+| `POLICY_VERSION`          | _(none)_        | Version string included in evaluation responses and audit records.                                                                                 |
+| `AUDIT_FAILURE_THRESHOLD` | `10`            | Consecutive audit write failures before `audit_writer` readiness degrades. Must be ≥ 1. See [Audit failure escalation](#audit-failure-escalation). |
+| `AUDIT_FAIL_CLOSED`       | `false`         | When `true`, a degraded audit writer causes `/v1/evaluate` to return `503`. Default `false` degrades readiness only.                               |
 
 ---
 
@@ -149,6 +154,7 @@ See `.env.example` for the full list of supported variables.
 Returns `200` when all required components are initialized. Returns `503` when any required component is not ready.
 
 **Ready response (200):**
+
 ```json
 {
   "status": "ready",
@@ -164,6 +170,7 @@ Returns `200` when all required components are initialized. Returns `503` when a
 ```
 
 **Not-ready response (503):**
+
 ```json
 {
   "status": "not_ready",
@@ -238,11 +245,13 @@ curl -X POST http://localhost:8000/v1/evaluate \
 ```
 
 **Optional fields:**
+
 - `request_id` — caller-supplied request ID; a UUID is generated if omitted
 - `resource_id` — resource identifier for the action; omit if not applicable
 - `context` — string key/value pairs passed through to the policy rule
 
 **Response (ALLOW, 200):**
+
 ```json
 {
   "request_id": "a1b2c3d4-...",
@@ -253,6 +262,7 @@ curl -X POST http://localhost:8000/v1/evaluate \
 ```
 
 **Response (DENY, 403):**
+
 ```json
 {
   "request_id": "a1b2c3d4-...",
@@ -283,7 +293,7 @@ The gateway loads a single JSON policy file at startup. The file must contain a 
       "rule_name": "my-rbac",
       "role_table": {
         "read:sensor:telemetry": ["viewer", "operator", "admin"],
-        "write:hvac:setpoint":   ["operator", "admin"]
+        "write:hvac:setpoint": ["operator", "admin"]
       }
     }
   ]
@@ -293,6 +303,7 @@ The gateway loads a single JSON policy file at startup. The file must contain a 
 Action strings must match the action constants defined in `basis-core`. See `policies/default.json` for a complete example covering all standard actions.
 
 **Policy loading behavior:**
+
 - The policy file is loaded once at startup. There is no dynamic reload.
 - If the file is missing or invalid, startup continues but the service does not become ready (`/ready` returns `503`).
 - When `OIDC_ISSUER` is set and `POLICY_PATH` is absent, startup fails immediately with a clear error message.
