@@ -336,7 +336,7 @@ once in production use.
 
 ## 8. Non-Goals
 
-`basis-gateway` does not provide and will not provide in the current phase:
+`basis-gateway` does not provide and will not provide in v0.1:
 
 - Persistent audit storage (events are written to the process log only)
 - SIEM integration or log forwarding
@@ -348,15 +348,14 @@ once in production use.
 - Policy history or policy version provenance
 - Structured audit event schema versioning beyond what `basis-core` provides
 
-These are future concerns that belong to dedicated phases or to a higher-level
-architecture decision.
+These are future concerns for a dedicated phase or higher-level architecture decision.
 
 ---
 
 ## 9. Open Questions and Follow-up Issues
 
 The following are known gaps or unresolved questions in the current audit model.
-They are out of scope for this branch and should be tracked separately.
+Items marked *(resolved)* are addressed in the current implementation; they are retained for context.
 
 **Pre-evaluation failure audit coverage** *(resolved)*
 Every reachable exit path in `POST /v1/evaluate` that returns before the kernel is

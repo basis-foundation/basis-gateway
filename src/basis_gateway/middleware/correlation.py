@@ -3,7 +3,7 @@
 Assigns a UUIDv4 correlation ID to every incoming request and ensures
 ``X-Correlation-ID`` is present on every outgoing response.
 
-Design decisions (Phase 7):
+Design decisions:
 - The gateway generates the correlation ID unconditionally.
 - Caller-supplied ``X-Correlation-ID`` request headers are ignored.
   External correlation IDs are not trusted as authoritative input.
