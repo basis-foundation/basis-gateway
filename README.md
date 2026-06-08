@@ -6,47 +6,19 @@ This is a private implementation repository. The service is not production-ready
 
 ---
 
-## Current implementation status
+## What's implemented
 
-### Phase 1 — Service skeleton ✓
-- `GET /health` — liveness probe
-- `GET /ready` — readiness probe (returns 200 after startup, 503 if not ready)
-- `src/basis_gateway/config.py` — environment-variable-driven configuration with validation
-- `src/basis_gateway/readiness.py` — thread-safe readiness state set during lifespan startup
-- 18 tests covering health, readiness, and configuration
+- **OIDC/JWT authentication** — Bearer token verification (RS256/RS384/RS512/ES256/ES384/ES512); `alg=none` rejected; JWKS cached with configurable TTL; OIDC discovery or explicit JWKS URI override
+- **Identity normalization** — verified JWT claims mapped to `NormalizedSubject` and `IdentityContext`; subject identity never accepted from the request body
+- **Policy loading** — JSON policy file loaded at startup; service will not become ready if missing or invalid
+- **Authorization evaluation** — `POST /v1/evaluate` delegates to `basis-core` `EnforcementPoint`; gateway enforces the returned decision at the HTTP boundary
+- **Audit evidence** — gateway-level `AuditEvent` records emitted for every outcome, including pre-evaluation failures; all events carry the same `correlation_id` as the response header
+- **Correlation IDs** — UUIDv4 generated per request by middleware; included in every response header and all audit records; caller-supplied `X-Correlation-ID` headers are ignored
+- **Per-component readiness** — `/ready` reports `configuration_loaded`, `oidc_configured`, `jwks_available`, `policy_loaded`, `audit_writer`, `evaluator_initialized`
+- **Audit failure escalation** — configurable degradation threshold; optional strict fail-closed mode blocks evaluation when the audit pipeline is unhealthy
+- **Fail-closed on every error path** — unexpected errors deny rather than permit
 
-### Phase 2 — OIDC verifier and subject mapper ✓
-- `src/basis_gateway/auth/oidc.py` — Bearer token extraction, OIDC discovery, JWKS fetch/cache, JWT verification (RS256/RS384/RS512/ES256/ES384/ES512; `alg=none` rejected)
-- `src/basis_gateway/auth/subject_mapper.py` — maps verified claims to `NormalizedSubject` and `IdentityContext`; no deprecated `subject_from_jwt` from `basis-core`
-- `src/basis_gateway/auth/errors.py` — typed auth error hierarchy
-- OIDC config fields added: `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URI`, `JWKS_CACHE_TTL_SECONDS`
-- 49 new tests (67 total); local generated RSA keys, mock JWKS server — **no live IdP required**
-
-### Phase 3 — basis-core integration and `/v1/evaluate` ✓
-- `POST /v1/evaluate` — full authorization lifecycle; subject from JWT, not request body
-- `src/basis_gateway/core/evaluator.py` — `GatewayEvaluator` wrapping `basis-core` `EnforcementPoint`
-- `src/basis_gateway/audit/writer.py` — `GatewayAuditWriter` delegating to `LogAuditWriter`; write failures logged, never propagated
-- `basis-core` integrated as package dependency; `EnforcementPoint` initialized at lifespan startup
-- 35 new tests (102 total): evaluate, fail-closed, audit
-
-### Phase 4 — Policy loading and readiness hardening ✓
-- `src/basis_gateway/policy/loader.py` — `load_policy_engine()` reads a JSON policy file at startup; raises `PolicyLoadError` on missing file, invalid JSON, or schema errors
-- Policy required at startup when `OIDC_ISSUER` is set; startup fails predictably with a clear error when `POLICY_PATH` is absent
-- `/ready` now returns per-component readiness state: `configuration_loaded`, `oidc_configured`, `jwks_available`, `policy_loaded`, `evaluator_initialized`
-- Demo `RolePolicyRule` removed from the runtime path; `policies/default.json` is the checked-in example policy
-- 34 new tests (136 total): policy loader, readiness components, startup integration
-
-### Phase 5 — Example policy and runtime documentation ✓
-- `policies/default.json` — checked-in example policy covering all standard basis-core actions
-- `.env.example` — documented environment variable reference with placeholder values
-- README updated to reflect Phase 4/5 runtime shape
-
-### Phase 7 — Correlation and failure evidence hardening ✓
-- `src/basis_gateway/middleware/correlation.py` — `CorrelationMiddleware` generates a UUIDv4 correlation ID per request at gateway ingress, attaches it to `request.state.correlation_id`, and adds `X-Correlation-ID` to every response
-- `X-Correlation-ID` is now returned on **all** gateway responses, including 400, 401, 503 pre-evaluation failures that previously lacked the header
-- The evaluate route reads `request.state.correlation_id` instead of generating a second UUID, ensuring the same ID appears in the response header and the `basis-core` audit event
-- Caller-supplied `X-Correlation-ID` request headers are not trusted; the gateway generates the correlation ID unconditionally
-- `docs/audit-model.md` updated to document Phase 7 correlation behavior and the remaining pre-evaluation audit evidence gap
+Tests run without a live IdP. See `tests/` for the current test count.
 
 ---
 
@@ -226,6 +198,30 @@ See `docs/audit-failure-escalation.md` for the complete architecture decision, f
 
 ---
 
+## Evaluation flow
+
+Every authorized request follows this path:
+
+```
+Bearer token in Authorization header
+        ↓
+JWT verification (signature, issuer, audience, algorithm)
+        ↓
+Identity normalization → NormalizedSubject (subject_id, roles)
+        ↓
+DecisionRequest → basis-core EnforcementPoint
+        ↓
+DecisionResponse (ALLOW / DENY / NOT_APPLICABLE)
+        ↓
+HTTP 200 or 403 returned to caller
+        ↓
+AuditEvent written (correlation_id links all records)
+```
+
+Gateway-level `AuditEvent` records are also emitted for failures that occur before the kernel is reached (authentication failures, validation errors, evaluator unavailable). All records share the same `correlation_id` as the `X-Correlation-ID` response header.
+
+---
+
 ## POST /v1/evaluate
 
 Requires a valid Bearer token in the `Authorization` header. Subject identity is derived from the token — do not provide `subject_id` or `subject_roles` in the body.
@@ -398,8 +394,10 @@ tests/          — see pytest output for current count; no live IdP required
 ## Related documents
 
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
-- [`docs/basis-gateway-v0.1-plan.md`](docs/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
 - [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, open questions
+- [`docs/audit-failure-escalation.md`](docs/audit-failure-escalation.md) — audit failure escalation architecture, failure scenarios, security analysis, and Model B/C trade-offs
+- [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
+- [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
 
