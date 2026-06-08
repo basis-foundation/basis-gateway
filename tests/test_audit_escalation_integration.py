@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from helpers import MockVerifier
 
 from basis_gateway.audit.writer import GatewayAuditWriter
 from basis_gateway.main import create_app
@@ -179,7 +180,6 @@ def test_fail_open_default_degraded_writer_does_not_block_evaluate(
 
     with TestClient(app, raise_server_exceptions=False) as c:
         # Wire a mock verifier so authentication doesn't fail
-        from tests.conftest import MockVerifier
 
         mock_verifier = MockVerifier(
             claims={
@@ -219,8 +219,6 @@ def test_fail_closed_true_degraded_writer_returns_503_from_evaluate(
     app = create_app()
 
     with TestClient(app, raise_server_exceptions=False) as c:
-        from tests.conftest import MockVerifier
-
         app.state.verifier = MockVerifier(
             claims={
                 "sub": "user1",
@@ -261,8 +259,6 @@ def test_fail_closed_true_recovers_organically_via_probe(
     app = create_app()
 
     with TestClient(app, raise_server_exceptions=False) as c:
-        from tests.conftest import MockVerifier
-
         app.state.verifier = MockVerifier(
             claims={
                 "sub": "user1",
@@ -309,8 +305,6 @@ def test_fail_closed_still_blocks_when_probe_fails(
     app = create_app()
 
     with TestClient(app, raise_server_exceptions=False) as c:
-        from tests.conftest import MockVerifier
-
         app.state.verifier = MockVerifier(
             claims={
                 "sub": "user1",
@@ -347,8 +341,6 @@ def test_fail_closed_false_explicit_degraded_does_not_block_evaluate(
     app = create_app()
 
     with TestClient(app, raise_server_exceptions=False) as c:
-        from tests.conftest import MockVerifier
-
         app.state.verifier = MockVerifier(
             claims={
                 "sub": "user1",
