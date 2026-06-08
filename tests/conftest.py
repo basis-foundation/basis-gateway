@@ -11,6 +11,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from fastapi.testclient import TestClient
+from helpers import MockVerifier
 from jwt.algorithms import RSAAlgorithm
 
 from basis_gateway.core.evaluator import GatewayEvaluator, build_null_evaluator
@@ -84,24 +85,10 @@ def client(app):
 # Mock OIDC verifier
 # ---------------------------------------------------------------------------
 
-
-class MockVerifier:
-    """Test double for OIDCVerifier. Returns pre-configured claims."""
-
-    def __init__(self, claims: dict[str, Any]) -> None:
-        self._claims = claims
-        self._should_raise: Exception | None = None
-
-    def set_raise(self, exc: Exception) -> None:
-        self._should_raise = exc
-
-    def clear_raise(self) -> None:
-        self._should_raise = None
-
-    def verify(self, token: str) -> dict[str, Any]:
-        if self._should_raise is not None:
-            raise self._should_raise
-        return dict(self._claims)
+# MockVerifier is defined in helpers.py and imported above.
+# It is re-exported here so test files that reference it via the mock_verifier
+# fixture do not need to import it directly.
+__all__ = ["MockVerifier"]
 
 
 @pytest.fixture()
