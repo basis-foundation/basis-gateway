@@ -396,6 +396,9 @@ tests/          — see pytest output for current count; no live IdP required
 ## Related documents
 
 - [`docs/release-readiness.md`](docs/release-readiness.md) — v0.1 scope, known limitations, out-of-scope items, architecture invariants confirmed
+- [`docs/release-candidate-assessment.md`](docs/release-candidate-assessment.md) — v0.1 release candidate assessment and verdict
+- [`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) — v0.1.0 release notes
+- [`docs/release-checklist.md`](docs/release-checklist.md) — release checklist for v0.1 and future releases
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
 - [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, known limitations
 - [`docs/audit-failure-escalation.md`](docs/audit-failure-escalation.md) — audit failure escalation architecture, failure scenarios, security analysis, and Model B/C trade-offs
