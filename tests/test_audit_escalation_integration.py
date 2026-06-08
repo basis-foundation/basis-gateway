@@ -200,7 +200,7 @@ def test_fail_open_default_degraded_writer_does_not_block_evaluate(
 
         # /v1/evaluate still processes (200 or 403) — not 503 from audit degradation
         resp = _post_evaluate(c)
-        assert resp.status_code != 503 or "audit" not in resp.json().get("detail", "").lower()
+        assert resp.status_code != 503 or "audit" not in resp.json().get("message", "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ def test_fail_closed_true_degraded_writer_returns_503_from_evaluate(
 
         resp = _post_evaluate(c)
         assert resp.status_code == 503
-        assert "audit" in resp.json().get("detail", "").lower()
+        assert "audit" in resp.json().get("message", "").lower()
 
 
 def test_fail_closed_true_recovers_organically_via_probe(
@@ -332,7 +332,7 @@ def test_fail_closed_still_blocks_when_probe_fails(
         for _ in range(3):
             resp = _post_evaluate(c)
             assert resp.status_code == 503
-            assert "audit" in resp.json().get("detail", "").lower()
+            assert "audit" in resp.json().get("message", "").lower()
         assert writer.degraded  # confirmed still degraded
 
 
@@ -366,7 +366,7 @@ def test_fail_closed_false_explicit_degraded_does_not_block_evaluate(
         # With fail-closed=false, evaluate proceeds normally
         resp = _post_evaluate(c)
         # Should NOT be 503 for audit degradation reason
-        detail = resp.json().get("detail", "")
+        detail = resp.json().get("message", "")
         assert not (resp.status_code == 503 and "audit" in detail.lower())
 
 
