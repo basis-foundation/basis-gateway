@@ -2,7 +2,9 @@
 
 `basis-gateway` is the authentication, identity normalization, and HTTP enforcement boundary for the BASIS ecosystem. It sits between external callers and `basis-core`. It does not evaluate policy — it delegates every authorization decision to `basis-core` via the stable public API and enforces the result at the HTTP boundary.
 
-This is a private implementation repository. The service is not production-ready.
+This repository contains the reference implementation of basis-gateway.
+
+The project is released as v0.1.0 and is intended for evaluation, experimentation, and community feedback. Production adoption should be preceded by environment-specific validation and security review.
 
 ---
 
