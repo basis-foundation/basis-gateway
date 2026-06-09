@@ -104,14 +104,14 @@ knowledge of the token, the issuer, or the JWKS endpoint.
 
 All configuration is sourced from environment variables.
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `OIDC_ISSUER` | When evaluation enabled | _(none)_ | Token issuer URL. Used for OIDC discovery and `iss` claim validation. Setting this variable enables the `/v1/evaluate` endpoint. |
-| `OIDC_AUDIENCE` | Recommended | _(none)_ | Expected `aud` claim. If unset, audience is not validated — not recommended for production. |
-| `OIDC_JWKS_URI` | No | _(none)_ | Override the JWKS endpoint. If not set, derived from `OIDC_ISSUER` via OIDC discovery. Useful in air-gapped or internal environments. |
-| `JWKS_CACHE_TTL_SECONDS` | No | `300` | JWKS in-memory cache TTL in seconds. Keys are held for this duration; on unknown `kid` the cache is refreshed regardless of TTL. |
-| `POLICY_PATH` | When evaluation enabled | _(none)_ | Path to the JSON policy file. Required when `OIDC_ISSUER` is set; startup fails fast if absent. |
-| `POLICY_VERSION` | No | _(none)_ | Version string included in evaluation responses and audit records. Aids correlation across deployments. |
+| Variable                 | Required                | Default  | Description                                                                                                                           |
+| ------------------------ | ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `OIDC_ISSUER`            | When evaluation enabled | _(none)_ | Token issuer URL. Used for OIDC discovery and `iss` claim validation. Setting this variable enables the `/v1/evaluate` endpoint.      |
+| `OIDC_AUDIENCE`          | Recommended             | _(none)_ | Expected `aud` claim. If unset, audience is not validated — not recommended for production.                                           |
+| `OIDC_JWKS_URI`          | No                      | _(none)_ | Override the JWKS endpoint. If not set, derived from `OIDC_ISSUER` via OIDC discovery. Useful in air-gapped or internal environments. |
+| `JWKS_CACHE_TTL_SECONDS` | No                      | `300`    | JWKS in-memory cache TTL in seconds. Keys are held for this duration; on unknown `kid` the cache is refreshed regardless of TTL.      |
+| `POLICY_PATH`            | When evaluation enabled | _(none)_ | Path to the JSON policy file. Required when `OIDC_ISSUER` is set; startup fails fast if absent.                                       |
+| `POLICY_VERSION`         | No                      | _(none)_ | Version string included in evaluation responses and audit records. Aids correlation across deployments.                               |
 
 "Evaluation enabled" means `OIDC_ISSUER` is set. When `OIDC_ISSUER` is absent, the gateway
 starts without OIDC or policy initialization. `/v1/evaluate` rejects all requests with
@@ -220,15 +220,15 @@ The following are unconditionally rejected regardless of key configuration:
 
 ### Claim validation details
 
-| Claim | Behavior |
-|---|---|
-| `iss` | Must exactly match `OIDC_ISSUER`. Mismatch → 401. |
-| `aud` | Must contain `OIDC_AUDIENCE` if set. Mismatch → 401. If `OIDC_AUDIENCE` is unset, audience is not validated. |
-| `exp` | Token must not be expired. Expired → 401. |
-| `kid` | Used for JWKS key lookup. Unknown `kid` triggers a JWKS re-fetch before rejecting. |
-| Signature | Verified using the resolved public key. Invalid signature → 401. |
-| Malformed token | Any token that cannot be decoded → 401. |
-| Missing header | Absent or non-Bearer `Authorization` header → 401. |
+| Claim           | Behavior                                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------------------------ |
+| `iss`           | Must exactly match `OIDC_ISSUER`. Mismatch → 401.                                                            |
+| `aud`           | Must contain `OIDC_AUDIENCE` if set. Mismatch → 401. If `OIDC_AUDIENCE` is unset, audience is not validated. |
+| `exp`           | Token must not be expired. Expired → 401.                                                                    |
+| `kid`           | Used for JWKS key lookup. Unknown `kid` triggers a JWKS re-fetch before rejecting.                           |
+| Signature       | Verified using the resolved public key. Invalid signature → 401.                                             |
+| Malformed token | Any token that cannot be decoded → 401.                                                                      |
+| Missing header  | Absent or non-Bearer `Authorization` header → 401.                                                           |
 
 Invalid authentication fails before policy evaluation. A token that fails any of these
 checks never reaches `basis-core`.
@@ -243,16 +243,16 @@ Caller-supplied identity fields in the request body are ignored.
 
 ### Claim mapping (as implemented)
 
-| JWT claim | NormalizedSubject field | Notes |
-|---|---|---|
-| `sub` | `subject_id` | Required. Missing `sub` → 401. |
-| `preferred_username` | `name` | Falls back to `sub` if absent. |
-| `realm_access.roles` | `roles` | Keycloak-style nested claim; checked first. |
-| `roles` | `roles` | Flat list claim; used if `realm_access.roles` is absent. |
-| `email` | `attributes["email"]` | Included when present. |
-| `given_name` | `attributes["given_name"]` | Included when present. |
-| `family_name` | `attributes["family_name"]` | Included when present. |
-| `name` | `attributes["name"]` | Included when present. |
+| JWT claim            | NormalizedSubject field     | Notes                                                    |
+| -------------------- | --------------------------- | -------------------------------------------------------- |
+| `sub`                | `subject_id`                | Required. Missing `sub` → 401.                           |
+| `preferred_username` | `name`                      | Falls back to `sub` if absent.                           |
+| `realm_access.roles` | `roles`                     | Keycloak-style nested claim; checked first.              |
+| `roles`              | `roles`                     | Flat list claim; used if `realm_access.roles` is absent. |
+| `email`              | `attributes["email"]`       | Included when present.                                   |
+| `given_name`         | `attributes["given_name"]`  | Included when present.                                   |
+| `family_name`        | `attributes["family_name"]` | Included when present.                                   |
+| `name`               | `attributes["name"]`        | Included when present.                                   |
 
 Role extraction behavior: `realm_access.roles` is checked first (Keycloak-style nested
 structure). If absent or not a list, the flat `roles` claim is checked. Malformed role
@@ -302,21 +302,21 @@ until all components initialize successfully. This is intentional fail-closed be
 
 `/ready` tracks the following components:
 
-| Component | Marks ready when |
-|---|---|
-| `configuration_loaded` | Environment variables parsed and validated |
-| `oidc_configured` | OIDC verifier initialized (discovery + JWKS client constructed) |
-| `jwks_available` | Initial JWKS fetch succeeded |
-| `policy_loaded` | Policy file loaded and parsed |
-| `audit_writer` | Audit writer initialized |
-| `evaluator_initialized` | `EnforcementPoint` constructed |
+| Component               | Marks ready when                                                |
+| ----------------------- | --------------------------------------------------------------- |
+| `configuration_loaded`  | Environment variables parsed and validated                      |
+| `oidc_configured`       | OIDC verifier initialized (discovery + JWKS client constructed) |
+| `jwks_available`        | Initial JWKS fetch succeeded                                    |
+| `policy_loaded`         | Policy file loaded and parsed                                   |
+| `audit_writer`          | Audit writer initialized                                        |
+| `evaluator_initialized` | `EnforcementPoint` constructed                                  |
 
 ### Endpoints
 
-| Endpoint | Purpose | Returns |
-|---|---|---|
-| `GET /health` | Liveness probe | Always `200 {"status": "ok"}` while the process is running |
-| `GET /ready` | Readiness probe | `200` when all components ready; `503` with component detail when not |
+| Endpoint      | Purpose         | Returns                                                               |
+| ------------- | --------------- | --------------------------------------------------------------------- |
+| `GET /health` | Liveness probe  | Always `200 {"status": "ok"}` while the process is running            |
+| `GET /ready`  | Readiness probe | `200` when all components ready; `503` with component detail when not |
 
 Example not-ready response:
 
@@ -362,19 +362,19 @@ exact issuer and audience values from your IdP's client registration.
 
 ## Troubleshooting
 
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| `401 Missing Authorization header` | No `Authorization` header in the request | Send `Authorization: Bearer <token>` |
-| `401 Token verification failed` (invalid issuer) | `OIDC_ISSUER` does not match the token's `iss` claim | Use the exact issuer value from the IdP's discovery document |
-| `401 Token verification failed` (invalid audience) | `OIDC_AUDIENCE` does not match the token's `aud` claim | Configure the correct client/API audience in `OIDC_AUDIENCE` |
-| `401 Token verification failed` (unknown kid) | The JWKS does not contain the signing key for this token | Check key rotation; verify the JWKS endpoint; consider setting `OIDC_JWKS_URI` explicitly |
-| `401 Token verification failed` (expired) | Token `exp` is in the past | Refresh the token; check clock skew between client and IdP |
-| `401 Token verification failed` (unsupported algorithm) | Token uses `alg=none` or a symmetric algorithm | Reconfigure the IdP client to use RS256, RS384, RS512, ES256, ES384, or ES512 |
-| `401 Authentication not configured` | `OIDC_ISSUER` is not set | Set `OIDC_ISSUER` and `POLICY_PATH` to enable evaluation |
-| `/ready` returns `503` with `oidc_configured: false` | OIDC discovery failed | Verify `OIDC_ISSUER` is reachable; check `{issuer}/.well-known/openid-configuration` |
-| `/ready` returns `503` with `jwks_available: false` | JWKS endpoint unreachable at startup | Check network connectivity to the JWKS endpoint; set `OIDC_JWKS_URI` to override |
-| `/ready` returns `503` with `policy_loaded: false` | `POLICY_PATH` missing or file invalid | Verify `POLICY_PATH` exists and contains a valid JSON policy |
-| Token rejected before policy evaluation | Authentication failed | Fix IdP/token configuration first; policy is not reached until authentication succeeds |
+| Symptom                                                 | Likely Cause                                             | Fix                                                                                       |
+| ------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `401 Missing Authorization header`                      | No `Authorization` header in the request                 | Send `Authorization: Bearer <token>`                                                      |
+| `401 Token verification failed` (invalid issuer)        | `OIDC_ISSUER` does not match the token's `iss` claim     | Use the exact issuer value from the IdP's discovery document                              |
+| `401 Token verification failed` (invalid audience)      | `OIDC_AUDIENCE` does not match the token's `aud` claim   | Configure the correct client/API audience in `OIDC_AUDIENCE`                              |
+| `401 Token verification failed` (unknown kid)           | The JWKS does not contain the signing key for this token | Check key rotation; verify the JWKS endpoint; consider setting `OIDC_JWKS_URI` explicitly |
+| `401 Token verification failed` (expired)               | Token `exp` is in the past                               | Refresh the token; check clock skew between client and IdP                                |
+| `401 Token verification failed` (unsupported algorithm) | Token uses `alg=none` or a symmetric algorithm           | Reconfigure the IdP client to use RS256, RS384, RS512, ES256, ES384, or ES512             |
+| `401 Authentication not configured`                     | `OIDC_ISSUER` is not set                                 | Set `OIDC_ISSUER` and `POLICY_PATH` to enable evaluation                                  |
+| `/ready` returns `503` with `oidc_configured: false`    | OIDC discovery failed                                    | Verify `OIDC_ISSUER` is reachable; check `{issuer}/.well-known/openid-configuration`      |
+| `/ready` returns `503` with `jwks_available: false`     | JWKS endpoint unreachable at startup                     | Check network connectivity to the JWKS endpoint; set `OIDC_JWKS_URI` to override          |
+| `/ready` returns `503` with `policy_loaded: false`      | `POLICY_PATH` missing or file invalid                    | Verify `POLICY_PATH` exists and contains a valid JSON policy                              |
+| Token rejected before policy evaluation                 | Authentication failed                                    | Fix IdP/token configuration first; policy is not reached until authentication succeeds    |
 
 If a readiness component is failing, inspect startup logs. Each failed component produces a
 log entry at ERROR level with the component name and the specific reason.
@@ -406,8 +406,7 @@ prevent traffic routing until the gateway is fully initialized.
 readiness probe and `GET /health` as the liveness probe. The gateway will not serve
 evaluation requests until all required components are initialized.
 
-**Identity boundary placement.** `basis-gateway` should be the outermost boundary that
-accepts external calls. `basis-core` should not be directly reachable by external callers;
+**Identity boundary placement.** `basis-gateway` should be the first BASIS enforcement boundary that accepts application-level authorization requests. It may sit behind infrastructure such as a load balancer, reverse proxy, VPN, ingress controller, or WAF, but those layers should not replace gateway identity verification or authorization enforcement. `basis-core` should not be directly reachable by external callers;
 all access should flow through the gateway. This ensures that every authorization decision
 is preceded by authenticated identity verification.
 
