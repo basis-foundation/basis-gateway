@@ -241,8 +241,51 @@ curl -X POST http://localhost:8000/v1/evaluate \
 
 **Optional fields:**
 - `request_id` — caller-supplied request ID; a UUID is generated if omitted
+- `resource_type` — domain for an adapter-normalized (bare-verb) action; see [Action composition](#action-composition) below
 - `resource_id` — resource identifier for the action; omit if not applicable
 - `context` — string key/value pairs passed through to the policy rule
+
+### Action composition
+
+`basis-core` evaluates **composite** action strings in the `{verb}:{domain}[:{object}]` form (e.g. `read:ahu`). `basis-adapters`, however, normalize a protocol operation into a **bare verb** (`read`) plus a separate `resource_type` (`ahu`). The gateway is the runtime boundary that reconciles the two, so `/v1/evaluate` accepts **both** request styles:
+
+**1. Direct, kernel-compatible (composite action):**
+
+```json
+{ "action": "read:ahu", "resource_id": "ahu:rooftop-1" }
+```
+
+The action is passed through to `basis-core` unchanged.
+
+**2. Adapter-normalized (bare verb + `resource_type`):**
+
+```json
+{ "action": "read", "resource_type": "ahu", "resource_id": "ahu:rooftop-1" }
+```
+
+The gateway composes `action` and `resource_type` into `read:ahu` before evaluation.
+
+Rules:
+
+- `resource_type` is **optional** for a composite action and **required** for a bare verb.
+- A bare verb without `resource_type` is rejected (`400 validation_failed`) — the gateway will not silently submit an action the kernel cannot evaluate.
+- Supplying both a composite action **and** a `resource_type` is ambiguous and rejected (`400 validation_failed`).
+- `resource_id` is **not** rewritten by composition; it must independently satisfy the kernel's `{type}:{qualifier}` resource format.
+
+This is the only thing the gateway does to the action: it **assembles** a kernel-compatible request. It does not evaluate authorization, define or extend the action vocabulary, or parse any protocol. Adapters remain protocol-normalization libraries; `basis-core` remains the authorization kernel and the authority that validates the action.
+
+**Composition evidence.** When the gateway composes a bare action, it records evidence in the evaluation context under the reserved `basis_gateway.*` namespace, so the composition is visible to policies and audit and is never silently applied:
+
+```json
+{
+  "basis_gateway.action_composed": "true",
+  "basis_gateway.original_action": "read",
+  "basis_gateway.resource_type": "ahu",
+  "basis_gateway.composed_action": "read:ahu"
+}
+```
+
+Callers must not supply `basis_gateway.*` context keys themselves; a request that does is rejected (`400 validation_failed`) so composition evidence cannot be forged. Composite (pass-through) requests receive no such evidence.
 
 **Response (ALLOW, 200):**
 ```json

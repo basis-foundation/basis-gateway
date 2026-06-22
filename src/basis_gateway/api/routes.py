@@ -38,6 +38,13 @@ from basis_gateway.audit.gateway_events import (
 from basis_gateway.auth.errors import AuthenticationError, SubjectMappingError, TokenExtractionError
 from basis_gateway.auth.oidc import extract_bearer_token
 from basis_gateway.auth.subject_mapper import map_claims
+from basis_gateway.core.actions import (
+    RESERVED_CONTEXT_PREFIX,
+    ActionCompositionError,
+    build_composition_evidence,
+    compose_action,
+    reserved_key_collisions,
+)
 from basis_gateway.core.evaluator import GatewayEvaluator
 from basis_gateway.readiness import get_readiness_state
 
@@ -206,7 +213,11 @@ def _internal_error(correlation_id: str) -> JSONResponse:
     description=(
         "Evaluate an authorization request against the configured policy. "
         "Subject identity is derived exclusively from the Bearer token — "
-        "do not provide subject_id or subject_roles in the request body."
+        "do not provide subject_id or subject_roles in the request body. "
+        "Accepts both a direct composite action (e.g. action='read:ahu') and an "
+        "adapter-normalized bare verb plus resource_type (e.g. action='read', "
+        "resource_type='ahu'), which the gateway composes into 'read:ahu' before "
+        "evaluation."
     ),
     response_model=EvaluateResponse,
     responses={
@@ -315,6 +326,62 @@ async def evaluate(
             reason=REASON_MALFORMED_BODY,
         )
         return _validation_failed("Malformed request body", correlation_id)
+
+    # ── 1b. Action composition boundary ──────────────────────────────────────
+    # The gateway is the runtime boundary between adapter-normalized operations
+    # (bare verb + resource_type) and kernel-compatible requests (composite
+    # action). Composition is request *assembly* — it makes no authorization
+    # decision and defines no vocabulary; basis-core remains the authority that
+    # validates the resulting action.
+    #
+    # Done before authentication so an ambiguous or malformed request is rejected
+    # consistently with the body-schema validation above (both emit
+    # VALIDATION_FAILED before auth).
+    #
+    # First, refuse any caller-supplied context key in the gateway's reserved
+    # namespace, so composition evidence can never be forged or overwritten.
+    collisions = reserved_key_collisions(eval_request.context)
+    if collisions:
+        emit_gateway_event(
+            audit_writer,
+            action=VALIDATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_INVALID_FIELDS,
+        )
+        return _validation_failed(
+            f"context keys {collisions} use the reserved '{RESERVED_CONTEXT_PREFIX}' "
+            "namespace and must not be supplied by the caller",
+            correlation_id,
+        )
+
+    try:
+        composed_action = compose_action(eval_request.action, eval_request.resource_type)
+    except ActionCompositionError as exc:
+        emit_gateway_event(
+            audit_writer,
+            action=VALIDATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_INVALID_FIELDS,
+        )
+        return _validation_failed(str(exc), correlation_id)
+
+    # Composition occurred iff a resource_type was supplied (a composite action
+    # with a resource_type is rejected above, so this is unambiguous).
+    did_compose = eval_request.resource_type is not None
+    effective_context: dict[str, str] = dict(eval_request.context)
+    if did_compose:
+        assert eval_request.resource_type is not None  # narrowed by did_compose
+        effective_context.update(
+            build_composition_evidence(
+                original_action=eval_request.action,
+                resource_type=eval_request.resource_type,
+                composed_action=composed_action,
+            )
+        )
 
     # ── 2. Bearer extraction ─────────────────────────────────────────────────
     try:
@@ -445,11 +512,11 @@ async def evaluate(
             normalized_subject=normalized_subject,
             raw_token=token,
             claims=claims,
-            action=eval_request.action,
+            action=composed_action,
             resource_id=eval_request.resource_id,
             request_id=request_id,
             correlation_id=correlation_id,
-            context=eval_request.context,
+            context=effective_context,
         )
     except ValidationError as exc:
         # DecisionRequest validation failed (invalid action/resource_id format).

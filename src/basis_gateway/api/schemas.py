@@ -13,12 +13,25 @@ class EvaluateRequest(BaseModel):
     The caller provides the action and optional resource identifier.
     Subject identity (who is making the request) is derived exclusively
     from the verified Bearer token — it must not be provided by the caller.
+
+    Two action styles are accepted (see ``basis_gateway.core.actions``):
+
+    - **Direct, kernel-compatible:** a composite ``action`` (e.g. ``read:ahu``)
+      with no ``resource_type``. Passed through to the kernel unchanged.
+    - **Adapter-normalized:** a bare verb ``action`` (e.g. ``read``) plus a
+      ``resource_type`` (e.g. ``ahu``). The gateway composes these into the
+      kernel-compatible ``read:ahu`` before evaluation.
+
+    ``resource_type`` is optional for a composite action and required for a bare
+    verb. Supplying both a composite action and a ``resource_type`` is ambiguous
+    and rejected by the composition boundary in the request handler.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     request_id: str | None = None
     action: str
+    resource_type: str | None = None
     resource_id: str | None = None
     context: dict[str, str] = {}
 

@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Action composition boundary** (`basis_gateway.core.actions`): `POST /v1/evaluate` now accepts adapter-normalized requests (bare verb `action` plus `resource_type`, e.g. `action="read"`, `resource_type="ahu"`) and composes them into the kernel-compatible composite action (`read:ahu`) before evaluation. Direct composite requests (`action="read:ahu"`) are unchanged and pass through.
+- `resource_type` field on `EvaluateRequest` (optional for composite actions, required for bare verbs).
+- Composition evidence recorded under the reserved `basis_gateway.*` context namespace (`action_composed`, `original_action`, `resource_type`, `composed_action`) whenever the gateway composes an action.
+
+### Changed
+
+- Ambiguous or incomposable requests are rejected with `400 validation_failed`: a bare verb without `resource_type`, a composite action with a `resource_type`, an invalid action/`resource_type` segment, or a caller-supplied `basis_gateway.*` context key (which would forge composition evidence).
+
+### Notes
+
+- The gateway composes action strings as part of request assembly only. It does not evaluate authorization, define or extend the action vocabulary, or parse protocols. `basis-core` remains the authorization kernel and the authority that validates the action; adapters remain protocol-normalization libraries.
+
+---
+
 ## [0.1.0] — 2026-06-08
 
 Initial public release of `basis-gateway`.
