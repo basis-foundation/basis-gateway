@@ -275,3 +275,37 @@ def test_missing_auth_still_401_even_with_valid_composition(evaluate_client):
     # Composition succeeds, but absent Authorization header still fails closed.
     resp = evaluate_client.post("/v1/evaluate", json={"action": "read", "resource_type": "ahu"})
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Audit path — the COMPOSED action reaches the emitted decision audit event
+# ---------------------------------------------------------------------------
+#
+# The kernel records the action it actually evaluated. For an adapter-normalized
+# request the gateway composes the action before invoking basis-core, so the
+# emitted AuthorizationDecision AuditEvent.action must be the composed string
+# ("read:ahu"), never the bare verb ("read"). This is the audit guarantee for the
+# affected path. (The basis_gateway.* evidence keys travel in DecisionRequest.context
+# only; basis-core's AuditEvent has no context field, so those keys are not part of
+# the audit payload — see the task analysis.)
+
+
+def test_composed_action_is_recorded_in_decision_audit_event(evaluate_client):
+    events: list = []
+
+    class _CapturingWriter:
+        def write(self, event) -> None:
+            events.append(event)
+
+    engine = PolicyEngine(
+        policies=[RolePolicyRule(role_table={"read:ahu": {"admin", "viewer"}}, rule_name="rbac")]
+    )
+    ep = EnforcementPoint(engine=engine, audit_writer=_CapturingWriter(), policy_version="test")
+    evaluate_client.app.state.evaluator = GatewayEvaluator(_enforcement_point=ep)
+
+    resp = _post(evaluate_client, {"action": "read", "resource_type": "ahu"})
+    assert resp.status_code == 200
+
+    decision_events = [getattr(e, "action", None) for e in events]
+    assert "read:ahu" in decision_events  # composed action is what was audited
+    assert "read" not in decision_events  # the bare verb is never audited
