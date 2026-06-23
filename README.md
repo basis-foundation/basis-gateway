@@ -241,8 +241,8 @@ curl -X POST http://localhost:8000/v1/evaluate \
 
 **Optional fields:**
 - `request_id` — caller-supplied request ID; a UUID is generated if omitted
-- `resource_type` — domain for an adapter-normalized (bare-verb) action; see [Action composition](#action-composition) below
-- `resource_id` — resource identifier for the action; omit if not applicable
+- `resource_type` — domain for an adapter-normalized (bare-verb) action and/or the type for a local `resource_id`; see [Action composition](#action-composition) and [Resource identifier composition](#resource-identifier-composition) below
+- `resource_id` — resource identifier for the action; a local id (e.g. `rooftop-1`) is composed with `resource_type` into a typed `ahu:rooftop-1`, an already-typed id is passed through; omit if not applicable
 - `context` — string key/value pairs passed through to the policy rule
 
 ### Action composition
@@ -260,17 +260,16 @@ The action is passed through to `basis-core` unchanged.
 **2. Adapter-normalized (bare verb + `resource_type`):**
 
 ```json
-{ "action": "read", "resource_type": "ahu", "resource_id": "ahu:rooftop-1" }
+{ "action": "read", "resource_type": "ahu", "resource_id": "rooftop-1" }
 ```
 
-The gateway composes `action` and `resource_type` into `read:ahu` before evaluation.
+The gateway composes `action` and `resource_type` into `read:ahu`, and the local `resource_id` and `resource_type` into the typed `ahu:rooftop-1`, before evaluation.
 
 Rules:
 
 - `resource_type` is **optional** for a composite action and **required** for a bare verb.
 - A bare verb without `resource_type` is rejected (`400 validation_failed`) — the gateway will not silently submit an action the kernel cannot evaluate.
 - Supplying both a composite action **and** a `resource_type` is ambiguous and rejected (`400 validation_failed`).
-- `resource_id` is **not** rewritten by composition; it must independently satisfy the kernel's `{type}:{qualifier}` resource format.
 
 This is the only thing the gateway does to the action: it **assembles** a kernel-compatible request. It does not evaluate authorization, define or extend the action vocabulary, or parse any protocol. Adapters remain protocol-normalization libraries; `basis-core` remains the authorization kernel and the authority that validates the action.
 
@@ -286,6 +285,49 @@ This is the only thing the gateway does to the action: it **assembles** a kernel
 ```
 
 Callers must not supply `basis_gateway.*` context keys themselves; a request that does is rejected (`400 validation_failed`) so composition evidence cannot be forged. Composite (pass-through) requests receive no such evidence.
+
+### Resource identifier composition
+
+The companion to action composition. `basis-core` identifies a resource with a **typed** `{type}:{qualifier}` string (e.g. `ahu:rooftop-1`). Adapters, however, emit a **local** `resource_id` (e.g. `rooftop-1`) alongside the same `resource_type` they carry for the action. The gateway composes the two, so `/v1/evaluate` accepts both styles:
+
+**1. Direct, kernel-compatible (typed `resource_id`):**
+
+```json
+{ "action": "read:ahu", "resource_id": "ahu:rooftop-1" }
+```
+
+The `resource_id` is passed through to `basis-core` unchanged.
+
+**2. Adapter-normalized (local `resource_id` + `resource_type`):**
+
+```json
+{ "action": "read", "resource_type": "ahu", "resource_id": "rooftop-1" }
+```
+
+The gateway composes `resource_type` and `resource_id` into `ahu:rooftop-1` before evaluation.
+
+Rules:
+
+- A local `resource_id` (no `:`) is composed with `resource_type` into the typed `{resource_type}:{resource_id}`.
+- An already-typed `resource_id` (contains a `:`) with **no** `resource_type` is passed through unchanged.
+- Supplying a `resource_type` alongside an **already-typed** `resource_id` is rejected (`400 validation_failed`) — the gateway must not accept two sources of resource-type truth, even when the prefix matches.
+- A **local** `resource_id` with **no** `resource_type` is rejected (`400 validation_failed`) — the gateway cannot construct a canonical identifier from a local id alone.
+- A `resource_type` with **no** `resource_id` is **not** a resource error: it is a resource-independent (or domain-level) request and composes no `resource_id`. The `resource_type` may still drive action composition.
+
+A resource-independent request (no `resource_type`, no `resource_id`) — e.g. `{ "action": "read:audit:log" }` — passes through unchanged.
+
+**Composition evidence.** When the gateway composes a local `resource_id`, it records evidence under the reserved `basis_gateway.*` namespace:
+
+```json
+{
+  "basis_gateway.resource_composed": "true",
+  "basis_gateway.original_resource_id": "rooftop-1",
+  "basis_gateway.resource_type": "ahu",
+  "basis_gateway.composed_resource_id": "ahu:rooftop-1"
+}
+```
+
+As with action composition, callers must not supply `basis_gateway.*` context keys; pass-through and resource-independent requests receive no resource-composition evidence.
 
 **Response (ALLOW, 200):**
 ```json
