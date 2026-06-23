@@ -46,6 +46,11 @@ from basis_gateway.core.actions import (
     reserved_key_collisions,
 )
 from basis_gateway.core.evaluator import GatewayEvaluator
+from basis_gateway.core.resources import (
+    ResourceCompositionError,
+    build_resource_composition_evidence,
+    compose_resource_id,
+)
 from basis_gateway.readiness import get_readiness_state
 
 log = logging.getLogger(__name__)
@@ -217,7 +222,11 @@ def _internal_error(correlation_id: str) -> JSONResponse:
         "Accepts both a direct composite action (e.g. action='read:ahu') and an "
         "adapter-normalized bare verb plus resource_type (e.g. action='read', "
         "resource_type='ahu'), which the gateway composes into 'read:ahu' before "
-        "evaluation."
+        "evaluation. Resource identity is composed the same way: a local "
+        "resource_id (e.g. 'rooftop-1') plus resource_type is composed into the "
+        "typed 'ahu:rooftop-1'; an already-typed resource_id is passed through. "
+        "Supplying a resource_type alongside an already-typed resource_id, or a "
+        "local resource_id with no resource_type, is rejected."
     ),
     response_model=EvaluateResponse,
     responses={
@@ -383,6 +392,44 @@ async def evaluate(
             )
         )
 
+    # ── 1c. Resource identifier composition boundary ─────────────────────────
+    # The companion to action composition: adapters emit a local resource_id
+    # (e.g. 'rooftop-1') plus a separate resource_type, while basis-core expects
+    # a typed '{type}:{qualifier}' identifier (e.g. 'ahu:rooftop-1'). The gateway
+    # composes the two. Like action composition this is request *assembly* — it
+    # makes no authorization decision and defines no resource taxonomy.
+    #
+    # A resource_type without a resource_id is NOT a resource-specific request:
+    # it is resource-independent (or domain-level) and composes no resource_id.
+    # Resource composition is rejected only when the request is resource-specific
+    # but cannot be made canonical (local id without a type, or an already-typed
+    # id presented alongside a redundant/ambiguous resource_type).
+    try:
+        resource_result = compose_resource_id(eval_request.resource_type, eval_request.resource_id)
+    except ResourceCompositionError as exc:
+        emit_gateway_event(
+            audit_writer,
+            action=VALIDATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_INVALID_FIELDS,
+        )
+        return _validation_failed(str(exc), correlation_id)
+
+    effective_resource_id = resource_result.resource_id
+    if resource_result.composed:
+        assert resource_result.original_resource_id is not None  # narrowed by composed
+        assert resource_result.resource_type is not None  # narrowed by composed
+        assert resource_result.resource_id is not None  # narrowed by composed
+        effective_context.update(
+            build_resource_composition_evidence(
+                original_resource_id=resource_result.original_resource_id,
+                resource_type=resource_result.resource_type,
+                composed_resource_id=resource_result.resource_id,
+            )
+        )
+
     # ── 2. Bearer extraction ─────────────────────────────────────────────────
     try:
         token = extract_bearer_token(authorization)
@@ -513,7 +560,7 @@ async def evaluate(
             raw_token=token,
             claims=claims,
             action=composed_action,
-            resource_id=eval_request.resource_id,
+            resource_id=effective_resource_id,
             request_id=request_id,
             correlation_id=correlation_id,
             context=effective_context,

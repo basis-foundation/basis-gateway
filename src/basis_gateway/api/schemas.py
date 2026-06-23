@@ -25,6 +25,20 @@ class EvaluateRequest(BaseModel):
     ``resource_type`` is optional for a composite action and required for a bare
     verb. Supplying both a composite action and a ``resource_type`` is ambiguous
     and rejected by the composition boundary in the request handler.
+
+    Resource identity is composed the same way (see
+    ``basis_gateway.core.resources``):
+
+    - **Adapter-normalized:** a local ``resource_id`` (e.g. ``rooftop-1``) plus a
+      ``resource_type`` (e.g. ``ahu``) is composed into the typed
+      ``ahu:rooftop-1`` before evaluation.
+    - **Direct, kernel-compatible:** an already-typed ``resource_id`` (e.g.
+      ``ahu:rooftop-1``) with no ``resource_type`` is passed through unchanged.
+
+    A ``resource_type`` with no ``resource_id`` is a resource-independent (or
+    domain-level) request: no resource identifier is composed. Supplying a
+    ``resource_type`` alongside an already-typed ``resource_id``, or a local
+    ``resource_id`` with no ``resource_type``, is rejected.
     """
 
     model_config = ConfigDict(extra="forbid")

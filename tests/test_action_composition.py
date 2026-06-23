@@ -87,15 +87,15 @@ def recording(evaluate_client):
 
 def test_composite_request_passes_action_through(recording):
     client, rec = recording
-    resp = _post(client, {"action": "read:ahu", "resource_id": "ahu-1"})
+    resp = _post(client, {"action": "read:ahu", "resource_id": "ahu:rooftop-1"})
     assert resp.status_code == 200
     assert rec.last["action"] == "read:ahu"
-    assert rec.last["resource_id"] == "ahu-1"
+    assert rec.last["resource_id"] == "ahu:rooftop-1"
 
 
 def test_composite_request_adds_no_composition_evidence(recording):
     client, rec = recording
-    _post(client, {"action": "read:ahu", "resource_id": "ahu-1"})
+    _post(client, {"action": "read:ahu", "resource_id": "ahu:rooftop-1"})
     ctx = rec.last["context"]
     for key in (
         EVIDENCE_ACTION_COMPOSED,
@@ -120,10 +120,11 @@ def test_existing_composite_request_still_allows_end_to_end(evaluate_client):
 
 def test_bare_request_composes_action(recording):
     client, rec = recording
-    resp = _post(client, {"action": "read", "resource_type": "ahu", "resource_id": "ahu-1"})
+    resp = _post(client, {"action": "read", "resource_type": "ahu", "resource_id": "rooftop-1"})
     assert resp.status_code == 200
     assert rec.last["action"] == "read:ahu"
-    assert rec.last["resource_id"] == "ahu-1"
+    # The local resource_id is composed alongside the action.
+    assert rec.last["resource_id"] == "ahu:rooftop-1"
 
 
 def test_bare_request_composes_and_evaluates_end_to_end(evaluate_client):
@@ -134,11 +135,12 @@ def test_bare_request_composes_and_evaluates_end_to_end(evaluate_client):
     ep = EnforcementPoint(engine=engine, audit_writer=NullAuditWriter(), policy_version="test")
     evaluate_client.app.state.evaluator = GatewayEvaluator(_enforcement_point=ep)
 
-    # resource_id must satisfy the kernel's own {type}:{qualifier} format
-    # independently of action composition (the gateway does not rewrite it).
+    # A local resource_id is composed with resource_type into the kernel's
+    # {type}:{qualifier} format (ahu:rooftop-1); see test_resource_composition.py
+    # for the resource-composition contract.
     resp = _post(
         evaluate_client,
-        {"action": "read", "resource_type": "ahu", "resource_id": "ahu:rooftop-1"},
+        {"action": "read", "resource_type": "ahu", "resource_id": "rooftop-1"},
     )
     assert resp.status_code == 200
     assert resp.json()["outcome"] == "allow"
@@ -230,7 +232,7 @@ def test_ordinary_context_is_preserved(recording):
 
 def test_composed_request_records_all_evidence(recording):
     client, rec = recording
-    _post(client, {"action": "read", "resource_type": "ahu", "resource_id": "ahu-1"})
+    _post(client, {"action": "read", "resource_type": "ahu", "resource_id": "rooftop-1"})
     ctx = rec.last["context"]
     assert ctx[EVIDENCE_ACTION_COMPOSED] == "true"
     assert ctx[EVIDENCE_ORIGINAL_ACTION] == "read"
