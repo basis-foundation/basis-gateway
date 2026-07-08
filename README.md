@@ -11,6 +11,7 @@ The project is released as v0.1.0 and is intended for evaluation, experimentatio
 ## What's implemented
 
 - **OIDC/JWT authentication** — Bearer token verification (RS256/RS384/RS512/ES256/ES384/ES512); `alg=none` rejected; JWKS cached with configurable TTL; OIDC discovery or explicit JWKS URI override
+- **BASIS-local token trust verifier** — verifies signed BASIS-local identity tokens issued by `basis-identity` (signature, issuer, audience, algorithm, timing, required identity claims); establishes identity trust only, is not wired into `/v1/evaluate` request authentication yet, and does not import `basis-identity` or `basis-core`; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md)
 - **Identity normalization** — verified JWT claims mapped to `NormalizedSubject` and `IdentityContext`; subject identity never accepted from the request body
 - **Policy loading** — JSON policy file loaded at startup; service will not become ready if missing or invalid
 - **Authorization evaluation** — `POST /v1/evaluate` delegates to `basis-core` `EnforcementPoint`; gateway enforces the returned decision at the HTTP boundary
@@ -489,6 +490,7 @@ tests/          — see pytest output for current count; no live IdP required
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
 - [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, known limitations
 - [`docs/audit-failure-escalation.md`](docs/audit-failure-escalation.md) — audit failure escalation architecture, failure scenarios, security analysis, and Model B/C trade-offs
+- [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md) — BASIS-local token trust contract, verifier behavior, and relationship to OIDC authentication
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities

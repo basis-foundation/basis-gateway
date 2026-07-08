@@ -96,9 +96,11 @@ ignore_missing_imports = true
 # and the PyJWKClient kwargs added in 2.8 (cache_jwk_set, lifespan).  The inline
 # type: ignore comments added for older sandbox stubs are now unused in
 # environments with the correct version; disable warn_unused_ignores here so the
-# file compiles cleanly in both old- and new-stub environments.
+# file compiles cleanly in both old- and new-stub environments. basis_local_token
+# calls the same jwt.get_unverified_header primitive and hits the identical
+# cross-environment stub variance.
 [[tool.mypy.overrides]]
-module = ["basis_gateway.auth.oidc"]
+module = ["basis_gateway.auth.oidc", "basis_gateway.auth.basis_local_token"]
 warn_unused_ignores = false
 
 # FastAPI route decorators (@router.get, @router.post, @app.exception_handler, etc.)

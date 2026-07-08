@@ -26,6 +26,7 @@ This guide covers operator-facing configuration and behavior. It does not cover:
 - Policy authoring or the policy file format
 - Protocol adapters
 - Console or UI integration
+- Verifying BASIS-local identity tokens issued by `basis-identity` — see [`docs/basis-local-token-trust.md`](basis-local-token-trust.md) for that separate, additive verifier
 
 ---
 
