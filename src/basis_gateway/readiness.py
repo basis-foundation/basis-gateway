@@ -1,15 +1,25 @@
 """Readiness state for basis-gateway.
 
 Tracks whether the application and its required components are ready to
-serve requests. All registered components must be ready for the overall
-state to be ready.
+serve requests. All *registered* components must be ready for the overall
+state to be ready — a component that was never registered (e.g. an
+inactive auth mode's components) does not block readiness.
 
 Components tracked:
-  - "configuration_loaded" — startup config validated successfully
-  - "oidc_configured"      — OIDC verifier initialized (optional when eval disabled)
-  - "jwks_available"       — JWKS endpoint reachable and keys loaded
-  - "evaluator_initialized"— EnforcementPoint constructed
-  - "policy_loaded"        — policy file loaded and parsed successfully
+  - "configuration_loaded"          — startup config validated successfully
+  - "oidc_configured"                — OIDC verifier initialized
+                                        (auth_mode="oidc" only; optional when eval disabled)
+  - "jwks_available"                 — JWKS endpoint reachable and keys loaded
+                                        (auth_mode="oidc" only)
+  - "basis_local_token_configured"   — BASIS-local token trust config validated
+                                        (auth_mode="basis_local_token" only)
+  - "evaluator_initialized"          — EnforcementPoint constructed
+  - "policy_loaded"                  — policy file loaded and parsed successfully
+
+Only the components for the currently configured auth_mode are ever
+registered, so "oidc_configured"/"jwks_available" never block readiness in
+"basis_local_token" mode, and "basis_local_token_configured" never blocks
+readiness in "oidc" mode.
 """
 
 from __future__ import annotations

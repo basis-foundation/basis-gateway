@@ -9,7 +9,7 @@ technology considerations.
 
 ## Purpose and Scope
 
-`basis-gateway` uses OIDC/JWT validation to authenticate callers before invoking `basis-core`.
+`basis-gateway` uses OIDC/JWT validation to authenticate callers before invoking `basis-core`. OIDC is the **default** authentication mode (`AUTH_MODE=oidc`, or `AUTH_MODE` unset) and everything in this guide describes that mode's behavior unchanged. `basis-gateway` also supports an alternative `AUTH_MODE=basis_local_token` mode that verifies signed identity tokens issued by `basis-identity` instead of contacting an OIDC provider — see [`docs/basis-local-token-trust.md`](basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time) for that mode and how the gateway selects between the two at runtime. The two modes are mutually exclusive per deployment, selected by explicit configuration, and never inferred from the token itself.
 
 The responsibilities are deliberately separated:
 
@@ -114,9 +114,11 @@ All configuration is sourced from environment variables.
 | `POLICY_PATH`            | When evaluation enabled | _(none)_ | Path to the JSON policy file. Required when `OIDC_ISSUER` is set; startup fails fast if absent.                                       |
 | `POLICY_VERSION`         | No                      | _(none)_ | Version string included in evaluation responses and audit records. Aids correlation across deployments.                               |
 
-"Evaluation enabled" means `OIDC_ISSUER` is set. When `OIDC_ISSUER` is absent, the gateway
-starts without OIDC or policy initialization. `/v1/evaluate` rejects all requests with
-`401 Authentication not configured`. This is the expected local-dev state.
+In `oidc` mode (the default), "evaluation enabled" means `OIDC_ISSUER` is set. When
+`OIDC_ISSUER` is absent, the gateway starts without OIDC or policy initialization.
+`/v1/evaluate` rejects all requests with `401 Authentication not configured`. This is the
+expected local-dev state. (In `basis_local_token` mode, evaluation is enabled by selecting
+that mode explicitly — see [`docs/basis-local-token-trust.md`](basis-local-token-trust.md).)
 
 When `OIDC_ISSUER` is set and `POLICY_PATH` is absent, startup fails immediately with a
 clear error before the service becomes ready.
@@ -340,6 +342,13 @@ When `OIDC_ISSUER` is not set, the `oidc_configured`, `jwks_available`, `policy_
 `audit_writer`, and `evaluator_initialized` components are not registered. `/ready` reflects
 only `configuration_loaded`. `/v1/evaluate` returns `401 Authentication not configured` for
 all requests. This is the expected local-dev state.
+
+### `basis_local_token` mode
+
+`oidc_configured` and `jwks_available` are specific to `AUTH_MODE=oidc` and are never
+registered when the gateway is explicitly in `basis_local_token` mode — that mode registers
+`basis_local_token_configured` instead, and OIDC readiness never blocks it (or vice versa).
+See [`docs/basis-local-token-trust.md`](basis-local-token-trust.md#readiness-in-basis_local_token-mode).
 
 ---
 

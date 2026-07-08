@@ -45,11 +45,14 @@ What this module is, and is not:
   an ordinary, caller-constructed, in-memory mapping of verification
   material only; a value that looks like a private key is rejected at
   configuration time.
-- It does **not** wire itself into request authentication or change
-  ``/v1/evaluate``'s existing OIDC-based behavior. This is a verifier and an
-  optional conversion helper into the existing gateway subject model
-  (:func:`basis_local_verification_result_to_gateway_identity`); runtime
-  auth-mode wiring is left to a later, separate change.
+- It does **not** decide, by itself, whether it runs at request time.
+  Runtime auth-mode selection (choosing this verifier vs. the OIDC verifier
+  per the configured ``AUTH_MODE``) lives in
+  :mod:`basis_gateway.auth.runtime`, which composes this module's
+  :func:`verify_basis_local_identity_token` and
+  :func:`basis_local_verification_result_to_gateway_identity` unchanged —
+  this module still does not read configuration, does not know about
+  ``AUTH_MODE``, and does not touch ``/v1/evaluate`` directly.
 
 Security invariants, mirrored from :mod:`basis_gateway.auth.oidc`:
 

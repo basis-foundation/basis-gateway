@@ -10,8 +10,9 @@ The project is released as v0.1.0 and is intended for evaluation, experimentatio
 
 ## What's implemented
 
+- **Runtime auth-mode selection** — `AUTH_MODE=oidc` (default) or `AUTH_MODE=basis_local_token` selects which verifier authenticates `/v1/evaluate` Bearer tokens; explicit configuration only, no fallback between modes; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time)
 - **OIDC/JWT authentication** — Bearer token verification (RS256/RS384/RS512/ES256/ES384/ES512); `alg=none` rejected; JWKS cached with configurable TTL; OIDC discovery or explicit JWKS URI override
-- **BASIS-local token trust verifier** — verifies signed BASIS-local identity tokens issued by `basis-identity` (signature, issuer, audience, algorithm, timing, required identity claims); establishes identity trust only, is not wired into `/v1/evaluate` request authentication yet, and does not import `basis-identity` or `basis-core`; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md)
+- **BASIS-local token trust verifier** — verifies signed BASIS-local identity tokens issued by `basis-identity` (signature, issuer, audience, algorithm, timing, required identity claims); establishes identity trust only; wired into `/v1/evaluate` request authentication when `AUTH_MODE=basis_local_token`; does not import `basis-identity` or `basis-core`; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md)
 - **Identity normalization** — verified JWT claims mapped to `NormalizedSubject` and `IdentityContext`; subject identity never accepted from the request body
 - **Policy loading** — JSON policy file loaded at startup; service will not become ready if missing or invalid
 - **Authorization evaluation** — `POST /v1/evaluate` delegates to `basis-core` `EnforcementPoint`; gateway enforces the returned decision at the HTTP boundary
@@ -27,16 +28,24 @@ Tests run without a live IdP. See `tests/` for the current test count.
 
 ## What the gateway requires
 
-When evaluation is enabled (i.e., `OIDC_ISSUER` is set), the gateway requires all of the following before it will serve authorization requests:
+Which verifier the gateway requires depends on `AUTH_MODE` (default: `oidc`):
+
+**`AUTH_MODE=oidc` (default) — evaluation enabled when `OIDC_ISSUER` is set:**
 
 - **OIDC issuer** — `OIDC_ISSUER` must be set to a reachable issuer URL. The gateway uses OIDC discovery to locate the JWKS endpoint and validate `iss` claims.
 - **JWKS availability** — the JWKS endpoint discovered from the issuer must be reachable at startup.
 - **Policy file** — `POLICY_PATH` must point to a valid JSON policy file. The file is loaded once at startup.
 - **Evaluator initialization** — the `EnforcementPoint` must be successfully constructed from the loaded policy.
 
-If any of these fail, the service starts but `/ready` returns `503` until all components are initialized. This is intentional fail-closed behavior: a misconfigured gateway will not serve requests rather than silently denying them with a generic error.
+**`AUTH_MODE=basis_local_token` — evaluation enabled by selecting this mode:**
 
-When `OIDC_ISSUER` is not set, the gateway starts without OIDC or policy initialization. `/v1/evaluate` rejects all requests with `401 Authentication not configured`. This is the default local-dev mode and is not suitable for production.
+- **BASIS-local token trust** — `BASIS_LOCAL_TOKEN_ISSUER`, `BASIS_LOCAL_TOKEN_AUDIENCE`, and `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` must all be set and valid (no `alg=none` or symmetric algorithm, no private-key-shaped material). See [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#configuring-basis-local-token-trust).
+- **Policy file** and **evaluator initialization** — same requirements as `oidc` mode.
+- `OIDC_ISSUER` and the other `OIDC_*` variables are not required and are not validated in this mode.
+
+If any required component fails, the service starts but `/ready` returns `503` until all components are initialized. This is intentional fail-closed behavior: a misconfigured gateway will not serve requests rather than silently denying them with a generic error.
+
+When neither mode's requirements are met (e.g. `AUTH_MODE=oidc` with `OIDC_ISSUER` unset), the gateway starts without verifier or policy initialization. `/v1/evaluate` rejects all requests with `401 Authentication not configured`. This is the default local-dev mode and is not suitable for production.
 
 ---
 
@@ -136,11 +145,17 @@ See `.env.example` for the full list of supported variables.
 | `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `ENVIRONMENT` | `local` | Deployment environment (`local`, `development`, `staging`, `production`) |
 | `SERVICE_NAME` | `basis-gateway` | Service identifier in health/ready responses |
-| `OIDC_ISSUER` | _(none)_ | Token issuer URL; required to enable `/v1/evaluate`. Used for OIDC discovery and `iss` validation. |
+| `AUTH_MODE` | `oidc` | Which verifier authenticates `/v1/evaluate` Bearer tokens: `oidc` or `basis_local_token`. Explicit only — never inferred from the token. See [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time). |
+| `OIDC_ISSUER` | _(none)_ | Token issuer URL; required to enable `/v1/evaluate` in `oidc` mode. Used for OIDC discovery and `iss` validation. Not required/validated in `basis_local_token` mode. |
 | `OIDC_AUDIENCE` | _(none)_ | Expected `aud` claim. If unset, audience is not validated. |
 | `OIDC_JWKS_URI` | _(none)_ | Override JWKS endpoint; skips OIDC discovery when set. |
 | `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
-| `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when `OIDC_ISSUER` is set. |
+| `BASIS_LOCAL_TOKEN_ISSUER` | _(none)_ | Expected `iss` claim on BASIS-local tokens; required when `AUTH_MODE=basis_local_token`. Not required/validated in `oidc` mode. |
+| `BASIS_LOCAL_TOKEN_AUDIENCE` | _(none)_ | Expected `aud` claim(s), comma-separated for multiple entries; required when `AUTH_MODE=basis_local_token`. |
+| `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` | _(none)_ | JSON object string mapping key id to PEM public key; required when `AUTH_MODE=basis_local_token`. |
+| `BASIS_LOCAL_TOKEN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated algorithm allow-list. `none` and any symmetric `HS*` algorithm are always rejected regardless of this setting. |
+| `BASIS_LOCAL_TOKEN_LEEWAY_SECONDS` | `0` | Clock-skew leeway (seconds) applied to BASIS-local token timing validation. |
+| `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when evaluation is enabled (`OIDC_ISSUER` set in `oidc` mode, or `AUTH_MODE=basis_local_token`). |
 | `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
 | `AUDIT_FAILURE_THRESHOLD` | `10` | Consecutive audit write failures before `audit_writer` readiness degrades. Must be ≥ 1. See [Audit failure escalation](#audit-failure-escalation). |
 | `AUDIT_FAIL_CLOSED` | `false` | When `true`, a degraded audit writer causes `/v1/evaluate` to return `503`. Default `false` degrades readiness only. |
@@ -149,7 +164,7 @@ See `.env.example` for the full list of supported variables.
 
 ## GET /ready
 
-Returns `200` when all required components are initialized. Returns `503` when any required component is not ready.
+Returns `200` when all required components are initialized. Returns `503` when any required component is not ready. Only the components for the configured `AUTH_MODE` are ever registered: `oidc_configured`/`jwks_available` in `oidc` mode, `basis_local_token_configured` in `basis_local_token` mode — the inactive mode's component is never registered and so never blocks readiness.
 
 **Ready response (200):**
 ```json
@@ -208,7 +223,8 @@ Every authorized request follows this path:
 ```
 Bearer token in Authorization header
         ↓
-JWT verification (signature, issuer, audience, algorithm)
+Verification per AUTH_MODE (signature, issuer, audience, algorithm) —
+oidc verifier or BASIS-local token verifier, never both, never inferred
         ↓
 Identity normalization → NormalizedSubject (subject_id, roles)
         ↓
@@ -464,7 +480,8 @@ mypy src --cache-dir /tmp/mypy-cache-basis-gateway
 ```
 src/basis_gateway/
   api/          — routes, request/response schemas
-  auth/         — OIDC verifier, subject mapper, error types
+  auth/         — OIDC verifier, BASIS-local token verifier, runtime auth-mode
+                  selection (auth/runtime.py), subject mapper, error types
   audit/        — audit writer (delegates to basis-core LogAuditWriter)
   core/         — GatewayEvaluator wrapping basis-core EnforcementPoint
   policy/       — policy loader (reads JSON, constructs PolicyEngine)

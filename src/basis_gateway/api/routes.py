@@ -37,7 +37,8 @@ from basis_gateway.audit.gateway_events import (
 )
 from basis_gateway.auth.errors import AuthenticationError, SubjectMappingError, TokenExtractionError
 from basis_gateway.auth.oidc import extract_bearer_token
-from basis_gateway.auth.subject_mapper import map_claims
+from basis_gateway.auth.runtime import AuthNotConfiguredError, authenticate
+from basis_gateway.config import AuthMode
 from basis_gateway.core.actions import (
     RESERVED_CONTEXT_PREFIX,
     ActionCompositionError,
@@ -455,10 +456,24 @@ async def evaluate(
         )
         return _authentication_required(str(exc), correlation_id)
 
-    # ── 3. JWT verification ──────────────────────────────────────────────────
-    verifier = getattr(request.app.state, "verifier", None)
-    if verifier is None:
-        log.error("OIDC verifier not initialized; rejecting request")
+    # ── 3/4. Runtime authentication (auth-mode dispatch) ─────────────────────
+    # Which verifier runs is selected by config.auth_mode ("oidc" or
+    # "basis_local_token") — never inferred from the token itself, and there
+    # is no fallback from one mode to the other. Produces the same
+    # (NormalizedSubject, IdentityContext) pair either mode takes, so the
+    # remainder of this handler is unchanged regardless of auth_mode.
+    auth_mode = config.auth_mode if config is not None else AuthMode.OIDC
+    try:
+        normalized_subject, identity_ctx = authenticate(
+            auth_mode=auth_mode,
+            token=token,
+            oidc_verifier=getattr(request.app.state, "verifier", None),
+            basis_local_trust_config=getattr(
+                request.app.state, "basis_local_token_trust_config", None
+            ),
+        )
+    except AuthNotConfiguredError as exc:
+        log.error("Authentication not configured for auth_mode=%s: %s", auth_mode.value, exc)
         emit_gateway_event(
             audit_writer,
             action=AUTHENTICATION_FAILED,
@@ -468,35 +483,6 @@ async def evaluate(
             reason=REASON_VERIFIER_NOT_CONFIGURED,
         )
         return _authentication_failed("Authentication not configured", correlation_id)
-
-    try:
-        claims: dict[str, Any] = verifier.verify(token)
-    except AuthenticationError as exc:
-        log.info("JWT verification failed: %s", exc)
-        emit_gateway_event(
-            audit_writer,
-            action=AUTHENTICATION_FAILED,
-            correlation_id=correlation_id,
-            http_method=http_method,
-            request_path=request_path,
-            reason=REASON_INVALID_TOKEN,
-        )
-        return _authentication_failed("Token verification failed", correlation_id)
-    except Exception:
-        log.exception("Unexpected error during JWT verification")
-        emit_gateway_event(
-            audit_writer,
-            action=AUTHENTICATION_FAILED,
-            correlation_id=correlation_id,
-            http_method=http_method,
-            request_path=request_path,
-            reason=REASON_INVALID_TOKEN,
-        )
-        return _authentication_failed("Token verification failed", correlation_id)
-
-    # ── 4. Subject mapping ───────────────────────────────────────────────────
-    try:
-        normalized_subject, _identity_ctx = map_claims(claims)
     except SubjectMappingError as exc:
         log.info("Subject mapping failed: %s", exc)
         emit_gateway_event(
@@ -508,17 +494,35 @@ async def evaluate(
             reason=REASON_IDENTITY_NORMALIZATION_FAILED,
         )
         return _authentication_failed("Identity normalization failed", correlation_id)
-    except Exception:
-        log.exception("Unexpected error during subject mapping")
+    except AuthenticationError as exc:
+        log.info("Token verification failed: %s", exc)
         emit_gateway_event(
             audit_writer,
             action=AUTHENTICATION_FAILED,
             correlation_id=correlation_id,
             http_method=http_method,
             request_path=request_path,
-            reason=REASON_IDENTITY_NORMALIZATION_FAILED,
+            reason=REASON_INVALID_TOKEN,
         )
-        return _authentication_failed("Identity normalization failed", correlation_id)
+        return _authentication_failed("Token verification failed", correlation_id)
+    except Exception:
+        log.exception("Unexpected error during authentication")
+        emit_gateway_event(
+            audit_writer,
+            action=AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_INVALID_TOKEN,
+        )
+        return _authentication_failed("Token verification failed", correlation_id)
+
+    # Verified claims dict, needed downstream for the basis-core
+    # IdentityContext's issued_at/expires_at timestamps. Populated by both
+    # auth modes: map_claims() (oidc) and
+    # basis_local_verification_result_to_gateway_identity() (basis_local_token)
+    # both set IdentityContext.claims to the full verified claims payload.
+    claims: dict[str, Any] = identity_ctx.claims
 
     # ── 5. Get evaluator ─────────────────────────────────────────────────────
     evaluator: GatewayEvaluator | None = getattr(request.app.state, "evaluator", None)
