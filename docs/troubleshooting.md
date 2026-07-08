@@ -58,15 +58,18 @@ ERROR ... Policy loading failed [policy_loaded]: Policy file not found: '/path/t
 The components are initialized in order:
 
 1. `configuration_loaded` — environment variables parsed successfully
-2. `oidc_configured` — OIDC discovery succeeded (only when `OIDC_ISSUER` is set)
-3. `jwks_available` — initial JWKS fetch succeeded (only when `OIDC_ISSUER` is set)
-4. `policy_loaded` — policy file loaded and parsed (only when `POLICY_PATH` is set)
-5. `audit_writer` — audit writer initialized (only when `POLICY_PATH` is set)
-6. `evaluator_initialized` — evaluator constructed (only when `POLICY_PATH` is set)
+2. Auth-mode-selected verifier (only one of these two is ever registered, per `AUTH_MODE`):
+   - `oidc_configured` + `jwks_available` — OIDC discovery and initial JWKS fetch succeeded (`AUTH_MODE=oidc`, only when `OIDC_ISSUER` is set)
+   - `basis_local_token_configured` — BASIS-local token trust configuration validated (`AUTH_MODE=basis_local_token`)
+3. `policy_loaded` — policy file loaded and parsed (only when `POLICY_PATH` is set)
+4. `audit_writer` — audit writer initialized (only when `POLICY_PATH` is set)
+5. `evaluator_initialized` — evaluator constructed (only when `POLICY_PATH` is set)
 
 ---
 
 ## Missing or invalid OIDC configuration
+
+> Applies to `AUTH_MODE=oidc` (the default). For `AUTH_MODE=basis_local_token`, see [Missing or invalid BASIS-local token configuration](#missing-or-invalid-basis-local-token-configuration) below instead.
 
 **Symptom:** `oidc_configured` is `false` in the `/ready` response; startup log shows `OIDC discovery failed [oidc_configured]`.
 
@@ -91,6 +94,26 @@ The components are initialized in order:
 - Verify the JWKS URI (logged in startup debug output) is reachable from the gateway host.
 - Check firewall rules, DNS resolution, and TLS certificate validity for the JWKS endpoint.
 - Set `OIDC_JWKS_URI` to point to a reachable endpoint and skip auto-discovery.
+
+---
+
+## Missing or invalid BASIS-local token configuration
+
+**Symptom:** `basis_local_token_configured` is `false` in the `/ready` response when `AUTH_MODE=basis_local_token`; startup log shows `BASIS-local token trust configuration failed [basis_local_token_configured]`.
+
+**Cause:** One of `BASIS_LOCAL_TOKEN_ISSUER`, `BASIS_LOCAL_TOKEN_AUDIENCE`, or `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` is missing; `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` is not valid JSON or does not decode to a non-empty object; or the decoded trust configuration itself is invalid (blank/whitespace-padded field, `alg=none` or a symmetric `HS*` algorithm in `BASIS_LOCAL_TOKEN_ALLOWED_ALGORITHMS`, a public key value that looks like a private key, or a negative `BASIS_LOCAL_TOKEN_LEEWAY_SECONDS`).
+
+**What to check:**
+
+- Confirm `BASIS_LOCAL_TOKEN_ISSUER`, `BASIS_LOCAL_TOKEN_AUDIENCE`, and `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` are all set.
+- Validate `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` is well-formed JSON mapping key id to PEM public key:
+  ```bash
+  echo "$BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON" | python3 -m json.tool
+  ```
+- Confirm each value is a **public** key PEM (`-----BEGIN PUBLIC KEY-----`), not a private key.
+- No network check is performed for this mode — there is nothing to reach at startup, so this failure is always a local configuration problem, not a connectivity one.
+
+See [`docs/basis-local-token-trust.md`](basis-local-token-trust.md#configuring-basis-local-token-trust) for the full configuration reference.
 
 ---
 

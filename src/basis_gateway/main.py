@@ -1,20 +1,28 @@
 """FastAPI application entrypoint for basis-gateway.
 
-Lifespan (Phase 4):
-  1. Load and validate configuration.           → marks "configuration_loaded"
+Lifespan:
+  1. Load and validate configuration.                     → marks "configuration_loaded"
   2. Validate evaluation config (fail-early).
-  3. Initialize the OIDC verifier (if enabled). → marks "oidc_configured"
-  4. Load policy from POLICY_PATH.              → marks "policy_loaded"
-  5. Initialize GatewayEvaluator.               → marks "evaluator_initialized"
+  3. Initialize the auth_mode-selected verifier:
+       - "oidc" (default): OIDC verifier             → marks "oidc_configured", "jwks_available"
+       - "basis_local_token": BASIS-local trust config → marks "basis_local_token_configured"
+  4. Load policy from POLICY_PATH.                         → marks "policy_loaded"
+  5. Initialize GatewayEvaluator.                           → marks "evaluator_initialized"
 
 Startup fails predictably when evaluation is enabled and required dependencies
 are unavailable. The service still starts (so /health responds), but /ready
 returns 503 until all components are ready.
 
+Only the components for the configured auth_mode are registered: in "oidc"
+mode, "basis_local_token_configured" is never registered (and vice versa),
+so the inactive mode's readiness never blocks the active one.
+
 app.state holds:
-  config    — GatewayConfig
-  verifier  — OIDCVerifier | None
-  evaluator — GatewayEvaluator | None
+  config                          — GatewayConfig
+  verifier                        — OIDCVerifier | None (auth_mode="oidc")
+  basis_local_token_trust_config  — BasisLocalTokenTrustConfig | None
+                                     (auth_mode="basis_local_token")
+  evaluator                       — GatewayEvaluator | None
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from basis_gateway.api.routes import router
 from basis_gateway.api.schemas import ErrorResponse
 from basis_gateway.audit.writer import build_audit_writer
 from basis_gateway.config import (
+    AuthMode,
     EvaluationConfigError,
     configure_logging,
     load_config,
@@ -55,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(config.log_level)
         app.state.config = config
         app.state.verifier = None
+        app.state.basis_local_token_trust_config = None
         app.state.evaluator = None
         app.state.audit_writer = None
         log.info(
@@ -81,48 +91,75 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Do not yield further — the caller catches all exceptions below.
             raise
 
-        # ── 3. OIDC verifier ─────────────────────────────────────────────────
-        if config.oidc_issuer:
-            from basis_gateway.auth.errors import JWKSFetchError, OIDCDiscoveryError
-            from basis_gateway.auth.oidc import OIDCVerifier
+        # ── 3. Runtime authentication ────────────────────────────────────────
+        # Which verifier initializes here is selected by config.auth_mode.
+        # The other mode's fields are neither required nor consulted. At
+        # request time, basis_gateway.auth.runtime.authenticate() dispatches
+        # on this same auth_mode to decide which of app.state.verifier /
+        # app.state.basis_local_token_trust_config to use — there is no
+        # fallback between modes.
+        if config.auth_mode == AuthMode.OIDC:
+            if config.oidc_issuer:
+                from basis_gateway.auth.errors import JWKSFetchError, OIDCDiscoveryError
+                from basis_gateway.auth.oidc import OIDCVerifier
 
-            log.info("Initializing OIDC verifier issuer=%s", config.oidc_issuer)
-            verifier = OIDCVerifier.from_config(
-                issuer=config.oidc_issuer,
-                audience=config.oidc_audience,
-                jwks_uri_override=config.oidc_jwks_uri,
-                cache_ttl_seconds=config.jwks_cache_ttl_seconds,
-            )
+                log.info("Initializing OIDC verifier issuer=%s", config.oidc_issuer)
+                verifier = OIDCVerifier.from_config(
+                    issuer=config.oidc_issuer,
+                    audience=config.oidc_audience,
+                    jwks_uri_override=config.oidc_jwks_uri,
+                    cache_ttl_seconds=config.jwks_cache_ttl_seconds,
+                )
+                try:
+                    verifier.initialize()
+                except OIDCDiscoveryError as exc:
+                    log.error(
+                        "OIDC discovery failed [oidc_configured]: %s — "
+                        "check that OIDC_ISSUER is reachable and the discovery endpoint "
+                        "(%s/.well-known/openid-configuration) returns a valid document",
+                        exc,
+                        config.oidc_issuer,
+                    )
+                    state.mark_not_ready(reason=str(exc), component="oidc_configured")
+                    raise
+                except JWKSFetchError as exc:
+                    log.error(
+                        "JWKS fetch failed [jwks_available]: %s — "
+                        "check that the JWKS endpoint is reachable from this host; "
+                        "set OIDC_JWKS_URI to override the discovered endpoint",
+                        exc,
+                    )
+                    state.mark_not_ready(reason=str(exc), component="jwks_available")
+                    raise
+                app.state.verifier = verifier
+                state.mark_ready("oidc_configured")
+                state.mark_ready("jwks_available")
+                log.info("OIDC verifier initialized issuer=%s", config.oidc_issuer)
+            else:
+                # Evaluation disabled — OIDC/JWKS components are not required.
+                log.warning(
+                    "OIDC_ISSUER not set — evaluation disabled; "
+                    "set OIDC_ISSUER to enable /v1/evaluate"
+                )
+        elif config.auth_mode == AuthMode.BASIS_LOCAL_TOKEN:
+            from basis_gateway.auth.basis_local_token import BasisLocalTokenConfigError
+            from basis_gateway.auth.runtime import build_basis_local_token_trust_config
+
+            log.info("Initializing BASIS-local token trust configuration")
             try:
-                verifier.initialize()
-            except OIDCDiscoveryError as exc:
+                trust_config = build_basis_local_token_trust_config(config)
+            except (EvaluationConfigError, BasisLocalTokenConfigError) as exc:
                 log.error(
-                    "OIDC discovery failed [oidc_configured]: %s — "
-                    "check that OIDC_ISSUER is reachable and the discovery endpoint "
-                    "(%s/.well-known/openid-configuration) returns a valid document",
-                    exc,
-                    config.oidc_issuer,
-                )
-                state.mark_not_ready(reason=str(exc), component="oidc_configured")
-                raise
-            except JWKSFetchError as exc:
-                log.error(
-                    "JWKS fetch failed [jwks_available]: %s — "
-                    "check that the JWKS endpoint is reachable from this host; "
-                    "set OIDC_JWKS_URI to override the discovered endpoint",
+                    "BASIS-local token trust configuration failed "
+                    "[basis_local_token_configured]: %s — check BASIS_LOCAL_TOKEN_ISSUER, "
+                    "BASIS_LOCAL_TOKEN_AUDIENCE, and BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON",
                     exc,
                 )
-                state.mark_not_ready(reason=str(exc), component="jwks_available")
+                state.mark_not_ready(reason=str(exc), component="basis_local_token_configured")
                 raise
-            app.state.verifier = verifier
-            state.mark_ready("oidc_configured")
-            state.mark_ready("jwks_available")
-            log.info("OIDC verifier initialized issuer=%s", config.oidc_issuer)
-        else:
-            # Evaluation disabled — OIDC/JWKS components are not required.
-            log.warning(
-                "OIDC_ISSUER not set — evaluation disabled; set OIDC_ISSUER to enable /v1/evaluate"
-            )
+            app.state.basis_local_token_trust_config = trust_config
+            state.mark_ready("basis_local_token_configured")
+            log.info("BASIS-local token trust configured issuer=%s", trust_config.issuer)
 
         # ── 4. Policy loading ────────────────────────────────────────────────
         if config.policy_path:

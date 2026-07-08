@@ -107,9 +107,16 @@ resolution occurs.
 The authentication and identity normalization path:
 
 1. Bearer token is extracted from the `Authorization` header.
-2. JWT is verified against the configured OIDC issuer and JWKS endpoint.
-3. Verified claims are passed to `map_claims()`, which produces a `NormalizedSubject`
-   containing `subject_id`, `name`, `roles`, and string-typed attributes.
+2. The token is verified using whichever verifier the configured `AUTH_MODE` selects
+   (`basis_gateway.auth.runtime.authenticate()`): the OIDC verifier against the configured
+   issuer and JWKS endpoint (`AUTH_MODE=oidc`, default), or the BASIS-local token verifier
+   against the configured trust config (`AUTH_MODE=basis_local_token`). Only one mode's
+   verifier ever runs per deployment; there is no fallback between them. See
+   [`docs/basis-local-token-trust.md`](basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time).
+3. Verified claims are mapped to a `NormalizedSubject` containing `subject_id`, `name`,
+   `roles`, and string-typed attributes — via `map_claims()` (OIDC) or
+   `basis_local_verification_result_to_gateway_identity()` (BASIS-local token), both of
+   which produce the identical downstream shape.
 4. A `basis-core` `Subject` and `IdentityContext` are constructed from the normalized
    subject and the raw token (for timestamp extraction).
 5. Both are passed into `EnforcementPoint.evaluate()`, which includes them verbatim in
@@ -119,7 +126,8 @@ The raw token is passed to `IdentityContext` for timestamp extraction (`iat`, `e
 but is never logged, included in responses, or included in audit records.
 
 Audit evidence reflects the **normalized identity** — the subject as the gateway
-understood it after JWT verification — not any identity asserted in the request body.
+understood it after verification, regardless of which mode performed it — not any
+identity asserted in the request body.
 
 ---
 
@@ -138,7 +146,7 @@ contains raw token material, JWT contents, or Authorization header values.
 | `action` | When emitted | HTTP outcome |
 |---|---|---|
 | `gateway.evaluation_requested` | Authentication succeeded; kernel evaluation is about to begin | 200 or 403 (final) |
-| `gateway.authentication_failed` | Token missing, malformed, expired, issuer/audience wrong, JWKS failure, verifier unconfigured, or subject unmappable | 401 |
+| `gateway.authentication_failed` | Token missing, malformed, expired, issuer/audience wrong, JWKS failure, verifier/trust-config unconfigured, or subject unmappable — same event for both `AUTH_MODE` values | 401 |
 | `gateway.validation_failed` | Request body is invalid JSON or fails schema validation | 400 |
 | `gateway.evaluator_unavailable` | Evaluator not initialized at request time | 503 |
 | `gateway.evaluation_failed_closed` | Unexpected exception during kernel evaluation | 400 or 500 |
@@ -154,7 +162,7 @@ contains raw token material, JWT contents, or Authorization header values.
 | `issuer_mismatch` | JWT issuer does not match configured issuer |
 | `audience_mismatch` | JWT audience does not match configured audience |
 | `jwks_verification_failure` | JWKS endpoint unreachable during verification |
-| `verifier_not_configured` | OIDC verifier not initialized at startup |
+| `verifier_not_configured` | The configured `AUTH_MODE`'s verifier/trust config not initialized at startup (OIDC verifier or BASIS-local token trust config, whichever mode is active) |
 | `identity_normalization_failed` | Verified claims could not be mapped to a subject |
 | `evaluator_not_initialized` | Evaluator not present in application state |
 | `malformed_request_body` | Request body is not valid JSON |
