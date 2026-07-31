@@ -510,8 +510,15 @@ tests/          — see pytest output for current count; no live IdP required
 - [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md) — BASIS-local token trust contract, verifier behavior, and relationship to OIDC authentication
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
+- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (**Status: Planned** — no operation-aware runtime behavior implemented yet)
 - [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
+
+---
+
+## Roadmap
+
+- **Operation-aware gateway integration** — Status: **Planned**. See [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for the full architecture and PR sequence adopting `basis-core` v0.2.0's operation-aware surface. Not started; `/v1/evaluate` is unaffected.
 
 ---
 
