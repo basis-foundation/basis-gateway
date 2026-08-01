@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -109,6 +109,43 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
     # When True, a degraded audit writer causes /v1/evaluate to return 503.
     # When False (default), only /ready is affected by audit degradation.
     audit_fail_closed: bool = Field(default=False, alias="AUDIT_FAIL_CLOSED")
+
+    # Operation-producer trust configuration (operation-aware integration,
+    # PR 4 — see src/basis_gateway/auth/operation_producer.py). An exact,
+    # case-sensitive allowlist of authenticated subject IDs permitted to
+    # assert operation-producer-only context. Comma-separated, mirroring the
+    # existing BASIS_LOCAL_TOKEN_AUDIENCE CSV convention. Default is empty:
+    # with no configuration, no caller is ever a trusted operation producer.
+    # No wildcard, prefix, role-based, or request-body-derived trust exists —
+    # this is the sole trust mechanism for this PR.
+    operation_producer_subject_ids: Annotated[frozenset[str], NoDecode] = Field(
+        default_factory=frozenset, alias="OPERATION_PRODUCER_SUBJECT_IDS"
+    )
+
+    @field_validator("operation_producer_subject_ids", mode="before")
+    @classmethod
+    def parse_operation_producer_subject_ids(cls, v: Any) -> frozenset[str]:
+        """Parse ``OPERATION_PRODUCER_SUBJECT_IDS`` into an exact-match allowlist.
+
+        Accepts a comma-separated string (the environment-variable shape) or
+        an already-iterable collection (for programmatic construction, e.g.
+        in tests). Whitespace is trimmed around each entry; empty entries
+        (including an entirely empty/whitespace-only string) are discarded;
+        duplicates are deduplicated by ``frozenset`` construction. Matching
+        performed against this set is exact and case-sensitive — a
+        wildcard-looking value (e.g. ``"adapter-*"``) is treated as a
+        literal, ordinary subject ID, never expanded as a pattern.
+        """
+        if v is None:
+            return frozenset()
+        if isinstance(v, str):
+            return frozenset(part.strip() for part in v.split(",") if part.strip())
+        if isinstance(v, (frozenset, set, list, tuple)):
+            return frozenset(str(part).strip() for part in v if str(part).strip())
+        raise TypeError(
+            "operation_producer_subject_ids must be a comma-separated string or an "
+            f"iterable of strings, got {type(v)!r}"
+        )
 
     # When True, the evaluation endpoint is considered enabled and its
     # auth-mode-appropriate configuration + policy are required. Derived at
