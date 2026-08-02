@@ -2,13 +2,17 @@
 
 Lifespan:
   1. Load and validate configuration.                     → marks "configuration_loaded"
+  1a. Register the operation-aware router (PR 6), from this same config,
+      when OPERATION_AWARE_ENABLED=true — before any step below that can
+      fail, so "enabled but a later step fails" still leaves the endpoint
+      registered (returning 503 at request time), not 404.
   2. Validate evaluation config (fail-early).
   3. Initialize the auth_mode-selected verifier:
        - "oidc" (default): OIDC verifier             → marks "oidc_configured", "jwks_available"
        - "basis_local_token": BASIS-local trust config → marks "basis_local_token_configured"
   4. Load policy from POLICY_PATH.                         → marks "policy_loaded"
   5. Initialize GatewayEvaluator.                           → marks "evaluator_initialized"
-  6. Operation-aware integration (PR 5, additive, feature-flagged).
+  6. Operation-aware evaluator construction (PR 5, additive, feature-flagged).
        Only runs when OPERATION_AWARE_ENABLED=true          → marks "operation_aware_evaluator"
 
 Startup fails predictably when evaluation is enabled and required dependencies
@@ -36,8 +40,17 @@ app.state holds:
   operation_aware_evaluator       — OperationAwareGatewayEvaluator | None
                                      (populated only when
                                      OPERATION_AWARE_ENABLED=true and startup
-                                     succeeds; not reachable from any route
-                                     in this PR)
+                                     succeeds; reachable via
+                                     POST /v1/evaluate/operation-aware,
+                                     registered per step 1a above whenever
+                                     OPERATION_AWARE_ENABLED=true, regardless
+                                     of whether this evaluator itself ends up
+                                     initialized — see
+                                     api.routes.evaluate_operation_aware's
+                                     own 503-when-unavailable handling)
+  operation_aware_router_registered — bool, guards against this router
+                                     being registered with FastAPI more than
+                                     once for a given app instance (step 1a)
 """
 
 from __future__ import annotations
@@ -50,7 +63,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from basis_gateway.api.routes import router
+from basis_gateway.api.routes import operation_aware_router, router
 from basis_gateway.api.schemas import ErrorResponse
 from basis_gateway.audit.writer import build_audit_writer
 from basis_gateway.config import (
@@ -99,6 +112,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         state.mark_ready("configuration_loaded")
         log.info("Configuration loaded")
+
+        # ── 1a. Operation-aware router registration (PR 6, §12) ─────────────
+        # Registered from this same successfully-loaded `config` — the sole
+        # authoritative configuration load for this startup — immediately
+        # after configuration loads and before any step below that can fail
+        # (fail-early validation, auth-mode initialization, policy loading,
+        # operation-aware evaluator construction). This guarantees the
+        # route's registration state depends only on
+        # `OPERATION_AWARE_ENABLED`, never on whether a later startup step
+        # succeeds: "enabled but evaluator unavailable" must still route to
+        # this handler and return 503 at request time, not 404. Guarded by
+        # `app.state.operation_aware_router_registered` so re-entering this
+        # lifespan against the same `FastAPI` app instance never registers
+        # the router with FastAPI more than once. `app.openapi_schema` is
+        # invalidated so the generated schema reflects the endpoint the
+        # first time it is registered on this app instance.
+        if config.operation_aware_enabled and not getattr(
+            app.state, "operation_aware_router_registered", False
+        ):
+            app.include_router(operation_aware_router)
+            app.state.operation_aware_router_registered = True
+            app.openapi_schema = None
+            log.info("Operation-aware endpoint registered path=/v1/evaluate/operation-aware")
 
         # ── 2. Fail-early validation ─────────────────────────────────────────
         # Raises EvaluationConfigError when evaluation is enabled but required
@@ -309,6 +345,23 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(router)
+
+    # The operation-aware endpoint (PR 6, §12 compatibility strategy) is NOT
+    # registered here. Route registration is decided inside `lifespan()`
+    # (see "1a. Operation-aware router registration" above), from the same
+    # `GatewayConfig` the lifespan loads once and treats as authoritative —
+    # never from a second, throwaway `load_config()` call at app-construction
+    # time. That keeps `create_app()` itself free of configuration loading
+    # (a malformed environment must still allow the app to be constructed
+    # and `/health` to respond, with `/ready` reporting `503` — the
+    # pre-existing startup-failure contract this repository already relies
+    # on) and guarantees route registration and runtime initialization
+    # observe exactly one configuration snapshot, not two. A deployment that
+    # does not enable the feature never has `POST
+    # /v1/evaluate/operation-aware` registered at all, and a request to it
+    # receives FastAPI's ordinary, unmodified 404. `router`/`/v1/evaluate`
+    # above are completely unaffected by this and are always registered
+    # synchronously here, as before.
     app.add_middleware(CorrelationMiddleware)
 
     # Convert FastAPI/Pydantic validation errors to 400 instead of 422.
