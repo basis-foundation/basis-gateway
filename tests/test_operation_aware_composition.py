@@ -187,7 +187,6 @@ def test_untrusted_caller_can_compose_existing_normalized_shape() -> None:
         action="read",
         resource_type="ahu",
         resource_id="rooftop-1",
-        context={"maintenance_ticket": "CHG-123"},
         request_id="req-1",
     )
     composed = _compose(request, producer_trust=_untrusted())
@@ -372,11 +371,24 @@ def test_resource_composition_evidence_preserved() -> None:
 
 # ---------------------------------------------------------------------------
 # 7. Reserved context collision
+#
+# PR 5 (basis-core v0.2.1 correction): OperationAwareEvaluateRequest.context
+# is now validated empty-only (see test_operation_aware_input_model.py's
+# test_non_empty_context_is_rejected) — an ordinary caller can never reach
+# compose_operation_aware_input() with a non-empty (reserved or otherwise)
+# context at all; PR 3's own validator rejects it first. The reserved-key
+# collision check in compose_operation_aware_input() therefore becomes an
+# internal defense-in-depth invariant rather than a caller-reachable path.
+# These tests exercise that invariant directly against a request object
+# built via model_construct() (bypassing PR 3's validator on purpose,
+# mirroring the identity-consistency invariant tests below) to prove the
+# defense still holds even if some future caller ever reached this function
+# with such a request.
 # ---------------------------------------------------------------------------
 
 
 def test_reserved_context_key_rejected() -> None:
-    request = OperationAwareEvaluateRequest(
+    request = OperationAwareEvaluateRequest.model_construct(
         action="read:ahu", context={f"{RESERVED_CONTEXT_PREFIX}forged": "true"}
     )
     with pytest.raises(ReservedContextKeyError) as exc_info:
@@ -386,11 +398,23 @@ def test_reserved_context_key_rejected() -> None:
 
 def test_reserved_context_key_not_silently_overwritten() -> None:
     """A rejected reserved-key request never reaches a composed result at all."""
-    request = OperationAwareEvaluateRequest(
+    request = OperationAwareEvaluateRequest.model_construct(
         action="read:ahu", context={f"{RESERVED_CONTEXT_PREFIX}original_action": "forged"}
     )
     with pytest.raises(ReservedContextKeyError):
         _compose(request)
+
+
+def test_ordinary_caller_cannot_reach_reserved_context_collision_at_all() -> None:
+    """The validated-construction path (no model_construct bypass) can never
+    even produce a non-empty context — PR 3's own validator rejects it
+    before compose_operation_aware_input() is ever called."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        OperationAwareEvaluateRequest(
+            action="read:ahu", context={f"{RESERVED_CONTEXT_PREFIX}forged": "true"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -515,15 +539,46 @@ def test_present_operation_producer_only_fields_deterministic_order() -> None:
 
 # ---------------------------------------------------------------------------
 # 11. Free-form context
+#
+# PR 5 (basis-core v0.2.1 correction): a caller can no longer supply
+# non-empty free-form context at all (rejected upstream by PR 3's own
+# validator — see test_operation_aware_input_model.py). The tests below
+# prove what actually reaches composition now: an always-empty caller
+# context, combined only with gateway-owned composition evidence.
 # ---------------------------------------------------------------------------
 
 
-def test_caller_context_values_preserved() -> None:
-    request = OperationAwareEvaluateRequest(
-        action="read:ahu", context={"maintenance_ticket": "CHG-123"}
-    )
+def test_no_arbitrary_caller_key_reaches_composed_result() -> None:
+    """A caller cannot get any non-reserved key into composed.context —
+    there is no longer a validated construction path that produces a
+    non-empty caller context at all."""
+    request = OperationAwareEvaluateRequest(action="read", resource_type="ahu")
     composed = _compose(request)
-    assert composed.context["maintenance_ticket"] == "CHG-123"
+    assert all(key.startswith(RESERVED_CONTEXT_PREFIX) for key in composed.context)
+
+
+def test_composed_context_keys_always_use_reserved_prefix_when_non_empty() -> None:
+    """Structural proof: whenever composed.context is non-empty, every key
+    present uses the reserved basis_gateway.* namespace — covering action
+    composition alone, resource composition alone, and both together."""
+    scenarios = [
+        OperationAwareEvaluateRequest(action="read", resource_type="ahu"),
+        OperationAwareEvaluateRequest(action="read", resource_type="ahu", resource_id="rooftop-1"),
+        OperationAwareEvaluateRequest(action="read:ahu"),
+    ]
+    for request in scenarios:
+        composed = _compose(request)
+        for key in composed.context:
+            assert key.startswith(RESERVED_CONTEXT_PREFIX), (
+                f"unexpected non-reserved composed-context key: {key!r}"
+            )
+
+
+def test_original_request_context_remains_empty() -> None:
+    request = OperationAwareEvaluateRequest(action="read", resource_type="ahu")
+    assert request.context == {}
+    _compose(request)
+    assert request.context == {}
 
 
 def test_original_input_dict_not_mutated() -> None:
@@ -531,7 +586,6 @@ def test_original_input_dict_not_mutated() -> None:
         "action": "read",
         "resource_type": "ahu",
         "resource_id": "rooftop-1",
-        "context": {"maintenance_ticket": "CHG-123"},
     }
     original = copy.deepcopy(payload)
     request = OperationAwareEvaluateRequest(**payload)
@@ -544,10 +598,12 @@ def test_original_input_dict_not_mutated() -> None:
 
 
 def test_composed_context_mapping_cannot_be_mutated() -> None:
-    request = OperationAwareEvaluateRequest(action="read:ahu", context={"a": "b"})
+    request = OperationAwareEvaluateRequest(action="read", resource_type="ahu")
     composed = _compose(request)
+    assert composed.context  # non-empty: contains gateway composition evidence
+    key = next(iter(composed.context))
     with pytest.raises(TypeError):
-        composed.context["a"] = "hacked"  # type: ignore[index]
+        composed.context[key] = "hacked"  # type: ignore[index]
 
 
 def test_composition_evidence_added_to_new_copy_not_original() -> None:
@@ -556,12 +612,75 @@ def test_composition_evidence_added_to_new_copy_not_original() -> None:
     composed = _compose(request)
     assert f"{RESERVED_CONTEXT_PREFIX}action_composed" not in original_context
     assert f"{RESERVED_CONTEXT_PREFIX}action_composed" in composed.context
+    # The gateway evidence is generated in a new mapping, never the same
+    # object as (or written back into) the original request's context.
+    assert composed.context is not request.context
 
 
-def test_free_form_context_provenance_is_untrusted_caller_asserted() -> None:
-    request = OperationAwareEvaluateRequest(action="read:ahu", context={"a": "b"})
+def test_composite_action_no_generated_context_yields_unavailable_provenance() -> None:
+    """A composite action with no resource composition produces no
+    composition evidence at all — composed.context is empty, and its
+    provenance is UNAVAILABLE (never VERIFIED, never
+    UNTRUSTED_CALLER_ASSERTED — arbitrary caller context can no longer
+    reach this function)."""
+    request = OperationAwareEvaluateRequest(action="read:ahu")
     composed = _compose(request)
-    assert composed.provenance["context"] is ProvenanceClassification.UNTRUSTED_CALLER_ASSERTED
+    assert composed.context == {}
+    assert composed.provenance["context"] is ProvenanceClassification.UNAVAILABLE
+
+
+def test_bare_action_plus_resource_type_yields_gateway_derived_context_provenance() -> None:
+    """Bare-verb action composition generates basis_gateway.* evidence —
+    composed.context is non-empty, and its provenance is GATEWAY_DERIVED."""
+    request = OperationAwareEvaluateRequest(action="read", resource_type="ahu")
+    composed = _compose(request)
+    assert composed.context
+    assert all(key.startswith(RESERVED_CONTEXT_PREFIX) for key in composed.context)
+    assert composed.provenance["context"] is ProvenanceClassification.GATEWAY_DERIVED
+
+
+def test_resource_composition_evidence_yields_gateway_derived_context_provenance() -> None:
+    """Local-resource-id + resource_type composition likewise generates
+    basis_gateway.* evidence and GATEWAY_DERIVED context provenance."""
+    request = OperationAwareEvaluateRequest(
+        action="read", resource_type="ahu", resource_id="rooftop-1"
+    )
+    composed = _compose(request)
+    assert composed.context
+    assert f"{RESERVED_CONTEXT_PREFIX}resource_composed" in composed.context
+    assert composed.provenance["context"] is ProvenanceClassification.GATEWAY_DERIVED
+
+
+def test_no_normal_validated_request_can_produce_untrusted_caller_asserted_context() -> None:
+    """Across every normal, validly-constructed request shape (no
+    composition, action composition only, resource composition only, and
+    both together), composed.provenance["context"] is never
+    UNTRUSTED_CALLER_ASSERTED — that classification is structurally
+    unreachable now that arbitrary caller context is rejected upstream by
+    OperationAwareEvaluateRequest's own validator."""
+    scenarios = [
+        OperationAwareEvaluateRequest(action="read:ahu"),
+        OperationAwareEvaluateRequest(action="read", resource_type="ahu"),
+        OperationAwareEvaluateRequest(action="read", resource_type="ahu", resource_id="rooftop-1"),
+    ]
+    for request in scenarios:
+        composed = _compose(request)
+        assert (
+            composed.provenance["context"] is not ProvenanceClassification.UNTRUSTED_CALLER_ASSERTED
+        )
+        assert composed.provenance["context"] in (
+            ProvenanceClassification.UNAVAILABLE,
+            ProvenanceClassification.GATEWAY_DERIVED,
+        )
+
+
+def test_context_provenance_never_verified() -> None:
+    """Gateway-generated composition evidence is GATEWAY_DERIVED, never
+    upgraded to VERIFIED — it is not independently authenticated the way
+    authorization_subject_* fields are."""
+    request = OperationAwareEvaluateRequest(action="read", resource_type="ahu")
+    composed = _compose(request)
+    assert composed.provenance["context"] is not ProvenanceClassification.VERIFIED
 
 
 # ---------------------------------------------------------------------------
@@ -583,13 +702,14 @@ def test_composed_provenance_mapping_cannot_be_mutated() -> None:
         composed.provenance["action"] = ProvenanceClassification.VERIFIED  # type: ignore[index]
 
 
-def test_modifying_source_dict_after_composition_does_not_alter_result() -> None:
-    source_context = {"a": "b"}
-    request = OperationAwareEvaluateRequest(action="read:ahu", context=source_context)
+def test_modifying_request_context_after_composition_does_not_alter_result() -> None:
+    """``dict(request.context)`` is copied at composition time — mutating
+    the request's context dict afterward (even though it starts empty,
+    per PR 5) cannot alter an already-returned composed result."""
+    request = OperationAwareEvaluateRequest(action="read:ahu")
     composed = _compose(request)
-    source_context["a"] = "mutated"
-    request.context["a"] = "also-mutated"
-    assert composed.context["a"] == "b"
+    request.context["basis_gateway.forged"] = "mutated-after-the-fact"
+    assert "basis_gateway.forged" not in composed.context
 
 
 # ---------------------------------------------------------------------------
@@ -818,7 +938,7 @@ def test_identity_mismatch_raises_and_leaves_inputs_unmodified(
     afterward — frozen dataclasses compare equal to a pre-call deep copy.
     """
     subject, identity_context, producer_trust = build_bad_inputs()
-    request = OperationAwareEvaluateRequest(action="read:ahu", context={"a": "b"})
+    request = OperationAwareEvaluateRequest(action="read:ahu")
 
     subject_before = copy.deepcopy(subject)
     identity_context_before = copy.deepcopy(identity_context)

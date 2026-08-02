@@ -122,6 +122,25 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
         default_factory=frozenset, alias="OPERATION_PRODUCER_SUBJECT_IDS"
     )
 
+    # Operation-aware kernel integration (PR 5 —
+    # src/basis_gateway/core/operation_aware_evaluator.py,
+    # src/basis_gateway/policy/operation_aware_loader.py). Disabled by
+    # default: with OPERATION_AWARE_ENABLED unset or "false", no
+    # operation-aware bundle is required, no operation-aware evaluator is
+    # initialized, and no operation-aware semantic preflight runs. This is
+    # deliberately independent of POLICY_PATH/POLICY_VERSION (the v0.1
+    # role-table format) and of `evaluation_enabled` above — the two policy
+    # formats and the two evaluators are structurally unrelated and are
+    # validated separately.
+    operation_aware_enabled: bool = Field(default=False, alias="OPERATION_AWARE_ENABLED")
+
+    # Path to the JSON operation-aware PolicyBundle file, structurally
+    # unrelated to POLICY_PATH's role-table format. Required only when
+    # OPERATION_AWARE_ENABLED=true.
+    operation_aware_policy_bundle_path: str | None = Field(
+        default=None, alias="OPERATION_AWARE_POLICY_BUNDLE_PATH"
+    )
+
     @field_validator("operation_producer_subject_ids", mode="before")
     @classmethod
     def parse_operation_producer_subject_ids(cls, v: Any) -> frozenset[str]:
@@ -227,6 +246,43 @@ def validate_evaluation_config(config: GatewayConfig) -> None:
         raise EvaluationConfigError(
             "POLICY_PATH is required when OIDC_ISSUER is configured. "
             "Set POLICY_PATH to the path of your JSON policy file."
+        )
+
+
+class OperationAwareConfigError(Exception):
+    """Raised when operation-aware integration is enabled but required
+    configuration is missing.
+
+    A dedicated exception, distinct from ``EvaluationConfigError`` — the
+    operation-aware bundle path is not part of the v0.1 evaluation-enabled
+    validation, and this PR does not overload that existing check.
+    """
+
+
+def validate_operation_aware_config(config: GatewayConfig) -> None:
+    """Raise OperationAwareConfigError if operation-aware integration is
+    enabled and its required configuration is incomplete.
+
+    Behavior:
+
+    - ``OPERATION_AWARE_ENABLED`` unset or ``false`` (the default): no
+      configuration is required; this function returns immediately without
+      inspecting ``operation_aware_policy_bundle_path`` at all.
+    - ``OPERATION_AWARE_ENABLED=true``: ``OPERATION_AWARE_POLICY_BUNDLE_PATH``
+      must be set (non-empty). This function checks presence only — file
+      existence, JSON validity, and bundle structure are checked by
+      ``basis_gateway.policy.operation_aware_loader`` when the bundle is
+      actually loaded.
+
+    Fail early; do not allow partial init.
+    """
+    if not config.operation_aware_enabled:
+        return
+    if not config.operation_aware_policy_bundle_path:
+        raise OperationAwareConfigError(
+            "OPERATION_AWARE_POLICY_BUNDLE_PATH is required when "
+            "OPERATION_AWARE_ENABLED=true. Set OPERATION_AWARE_POLICY_BUNDLE_PATH to the "
+            "path of your operation-aware JSON policy bundle file."
         )
 
 

@@ -93,7 +93,6 @@ def test_existing_normalized_operation_fields_preserved() -> None:
         "action": "read",
         "resource_type": "ahu",
         "resource_id": "rooftop-1",
-        "context": {"maintenance_ticket": "CHG-123"},
     }
 
     req = OperationAwareEvaluateRequest(**payload)
@@ -102,7 +101,7 @@ def test_existing_normalized_operation_fields_preserved() -> None:
     assert req.action == "read"
     assert req.resource_type == "ahu"
     assert req.resource_id == "rooftop-1"
-    assert req.context == {"maintenance_ticket": "CHG-123"}
+    assert req.context == {}
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +301,45 @@ def test_arbitrary_unknown_field_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7a. Free-form context contract (PR 5, basis-core v0.2.1 correction)
+#
+# OperationAwareDecisionRequest has no free-form context field to map this
+# onto (see basis_gateway.core.operation_aware_evaluator's module
+# docstring). Omitted/explicit-empty context remains valid; any non-empty
+# value is rejected clearly, rather than accepted here and silently dropped
+# at kernel-request construction time.
+# ---------------------------------------------------------------------------
+
+
+def test_omitted_context_defaults_to_empty_dict() -> None:
+    req = OperationAwareEvaluateRequest(action="read:ahu")
+    assert req.context == {}
+
+
+def test_explicit_empty_context_is_accepted() -> None:
+    req = OperationAwareEvaluateRequest(action="read:ahu", context={})
+    assert req.context == {}
+
+
+def test_non_empty_context_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        OperationAwareEvaluateRequest(action="read:ahu", context={"maintenance_ticket": "CHG-123"})
+
+
+def test_non_empty_context_rejection_identifies_context_field() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OperationAwareEvaluateRequest(action="read:ahu", context={"a": "b"})
+    assert "context" in str(exc_info.value)
+
+
+def test_non_empty_single_key_context_rejected() -> None:
+    """Even a single, otherwise-innocuous key is rejected — there is no
+    partial-acceptance or best-effort filtering of caller context."""
+    with pytest.raises(ValidationError):
+        OperationAwareEvaluateRequest(action="read:ahu", context={"note": "ok"})
+
+
+# ---------------------------------------------------------------------------
 # 8. Input mutation
 # ---------------------------------------------------------------------------
 
@@ -310,7 +348,7 @@ def test_validation_does_not_mutate_input_dict() -> None:
     payload = {
         "action": "read:ahu",
         "location": {"site_id": "site-1"},
-        "context": {"maintenance_ticket": "CHG-123"},
+        "context": {},
     }
     original = copy.deepcopy(payload)
 
