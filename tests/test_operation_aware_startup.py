@@ -230,7 +230,14 @@ def test_enabled_valid_v01_evaluator_state_remains_unchanged(monkeypatch, tmp_pa
         assert app.state.evaluator is None  # no POLICY_PATH set in this test
 
 
-def test_enabled_valid_no_route_registered(monkeypatch, tmp_path) -> None:
+def test_enabled_valid_route_registered_and_requires_auth(monkeypatch, tmp_path) -> None:
+    """PR 5 asserted this route did not exist yet (404 regardless of
+    payload). PR 6 wires it up behind the same OPERATION_AWARE_ENABLED flag
+    checked here, so an enabled-and-valid startup now makes the route
+    reachable — an unauthenticated request gets the same 401 an
+    unauthenticated /v1/evaluate request would, not a 404. See
+    tests/test_operation_aware_endpoint.py for the full route behavior
+    matrix (feature gating, auth, composition, evaluator availability)."""
     path = write_bundle(tmp_path, VALID_BUNDLE)
     monkeypatch.setenv("OPERATION_AWARE_ENABLED", "true")
     monkeypatch.setenv("OPERATION_AWARE_POLICY_BUNDLE_PATH", path)
@@ -238,7 +245,7 @@ def test_enabled_valid_no_route_registered(monkeypatch, tmp_path) -> None:
     app = create_app()
     with TestClient(app) as client:
         response = client.post("/v1/evaluate/operation-aware", json={"action": "read:ahu"})
-        assert response.status_code == 404
+        assert response.status_code == 401
 
 
 def test_enabled_valid_no_operational_audit_writer_touched(monkeypatch, tmp_path) -> None:

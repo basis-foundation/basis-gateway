@@ -1,9 +1,12 @@
 """Route definitions for basis-gateway.
 
 Endpoints:
-  GET  /health         — liveness probe
-  GET  /ready          — readiness probe
-  POST /v1/evaluate    — authorization evaluation
+  GET  /health                       — liveness probe
+  GET  /ready                        — readiness probe
+  POST /v1/evaluate                  — authorization evaluation
+  POST /v1/evaluate/operation-aware  — operation-aware authorization
+                                        evaluation (PR 6, feature-flagged;
+                                        see ``operation_aware_router`` below)
 """
 
 from __future__ import annotations
@@ -16,6 +19,11 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from basis_gateway.api.operation_aware_classification import classify_operation_aware_http_status
+from basis_gateway.api.operation_aware_schemas import (
+    OperationAwareEvaluateRequest,
+    OperationAwareEvaluateResponse,
+)
 from basis_gateway.api.schemas import ErrorResponse, EvaluateRequest, EvaluateResponse
 from basis_gateway.audit.gateway_events import (
     AUDIT_RECOVERY_PROBE,
@@ -37,6 +45,7 @@ from basis_gateway.audit.gateway_events import (
 )
 from basis_gateway.auth.errors import AuthenticationError, SubjectMappingError, TokenExtractionError
 from basis_gateway.auth.oidc import extract_bearer_token
+from basis_gateway.auth.operation_producer import classify_operation_producer
 from basis_gateway.auth.runtime import AuthNotConfiguredError, authenticate
 from basis_gateway.config import AuthMode
 from basis_gateway.core.actions import (
@@ -47,6 +56,15 @@ from basis_gateway.core.actions import (
     reserved_key_collisions,
 )
 from basis_gateway.core.evaluator import GatewayEvaluator
+from basis_gateway.core.operation_aware_composition import (
+    CompositionInternalError,
+    OperationAwareCompositionError,
+    compose_operation_aware_input,
+)
+from basis_gateway.core.operation_aware_evaluator import (
+    OperationAwareGatewayEvaluator,
+    OperationAwareRequestConstructionError,
+)
 from basis_gateway.core.resources import (
     ResourceCompositionError,
     build_resource_composition_evidence,
@@ -56,6 +74,17 @@ from basis_gateway.readiness import get_readiness_state
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Operation-aware endpoint (PR 6). Kept on a *separate* APIRouter instance
+# from `router` so it can be registered independently of the existing
+# `/v1/evaluate` route, per the feature-flag-gated compatibility strategy
+# (§12): `main.py`'s `create_app()` includes this router only when
+# `OPERATION_AWARE_ENABLED=true` at app-construction time, so a deployment
+# that does not enable the feature never has this route registered at all —
+# a request to it receives FastAPI's ordinary 404, not a gated 404 produced
+# by this module. `router` above (and the existing `/v1/evaluate` handler)
+# is completely untouched by this addition.
+operation_aware_router = APIRouter()
 
 _SERVICE_NAME = "basis-gateway"
 
@@ -610,6 +639,211 @@ async def evaluate(
     )
 
     status_code = 200 if outcome == DecisionOutcome.ALLOW else 403
+
+    # X-Correlation-ID is added to all responses by CorrelationMiddleware.
+    return JSONResponse(
+        status_code=status_code,
+        content=response_body.model_dump(exclude_none=True),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/evaluate/operation-aware (PR 6)
+# ---------------------------------------------------------------------------
+
+
+@operation_aware_router.post(
+    "/v1/evaluate/operation-aware",
+    summary="Operation-aware authorization evaluation",
+    description=(
+        "Evaluate an operation-aware authorization request against the configured "
+        "operation-aware policy bundle. Only reachable when OPERATION_AWARE_ENABLED=true. "
+        "Subject identity is derived exclusively from the Bearer token, exactly as for "
+        "/v1/evaluate — do not provide subject_id or subject_roles in the request body. "
+        "Operation-producer-only fields (operation_intent, location, device, "
+        "protocol_context, safety_context, environment_context, risk_context, "
+        "identity_evidence_reference, adapter_evidence_reference) may only be supplied by "
+        "a caller the gateway has classified as a trusted operation producer "
+        "(OPERATION_PRODUCER_SUBJECT_IDS); an ordinary authenticated caller supplying any "
+        "of these fields is rejected. The response preserves the kernel's evaluation "
+        "status, outcome, failure reason, and computed disposition exactly — see "
+        "docs/implementation/operation-aware-gateway-integration-plan.md §9 for the "
+        "result-to-HTTP status mapping."
+    ),
+    response_model=OperationAwareEvaluateResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        403: {"model": OperationAwareEvaluateResponse},
+        500: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def evaluate_operation_aware(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Operation-aware evaluation lifecycle (§16 PR 6):
+
+    Bearer extraction → JWT verification → operation-producer trust
+    classification → provenance-gated composition → public kernel request
+    construction → ``OperationAwareEnforcementPoint`` → exact result-to-HTTP
+    classification.
+
+    Fails closed on every error path. Raw token contents never appear in
+    responses or logs. This handler does not modify, share a route with, or
+    change the behavior of ``POST /v1/evaluate`` above.
+
+    A structured ``OperationAwareEvaluateResponse`` body is returned
+    whenever the kernel actually ran (§11) — including governed failure
+    results mapped to ``400``/``500``/``503``. A generic sanitized
+    ``ErrorResponse`` is returned only when the kernel never ran at all
+    (authentication failure, shape/provenance/composition failure, no
+    evaluator available, or an unexpected exception before a trustworthy
+    kernel result exists) — no kernel outcome, failure reason, disposition,
+    or trace is ever fabricated for those cases.
+
+    PR 6 does not emit gateway-level audit events for this endpoint (see
+    ``docs/implementation/operation-aware-gateway-integration-plan.md``'s
+    Audit Boundary — full ``GatewayAuditEvent`` assembly is PR 7's scope);
+    the real kernel result (including its ``AuditEvidence``) is still
+    produced and returned to the caller, so no evidence PR 7 will need is
+    lost.
+    """
+    # Correlation ID is generated by CorrelationMiddleware and attached to
+    # request.state before this handler is called — the gateway-generated ID
+    # remains authoritative, exactly as for /v1/evaluate. Caller-supplied
+    # X-Correlation-ID headers are ignored by the middleware itself.
+    correlation_id: str = request.state.correlation_id
+    config = getattr(request.app.state, "config", None)
+
+    # ── 1. Parse and shape-validate the request body ────────────────────────
+    # OperationAwareEvaluateRequest's extra="forbid" rejects: unknown fields,
+    # expected_policy_version, gateway-owned facts (subject_id, subject_roles,
+    # evaluation_time, correlation_id, outcome, disposition, ...), and any
+    # other field the model does not define. A deliberate 400 here (not an
+    # automatic FastAPI 422), matching /v1/evaluate's existing convention.
+    try:
+        body_bytes = await request.body()
+        oa_request = OperationAwareEvaluateRequest.model_validate_json(body_bytes)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False)
+        message = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        return _validation_failed(message, correlation_id)
+    except Exception:
+        return _validation_failed("Malformed request body", correlation_id)
+
+    # ── 2. Bearer extraction ─────────────────────────────────────────────────
+    try:
+        token = extract_bearer_token(authorization)
+    except TokenExtractionError as exc:
+        return _authentication_required(str(exc), correlation_id)
+    except AuthenticationError as exc:
+        return _authentication_required(str(exc), correlation_id)
+
+    # ── 3. Runtime authentication (auth-mode dispatch) ───────────────────────
+    # Reuses auth/runtime.py unchanged — identical authentication to
+    # /v1/evaluate, including auth-mode dispatch and the no-fallback-between-
+    # modes rule. This step establishes only the authorization subject; it
+    # says nothing about operation-producer trust (step 4).
+    auth_mode = config.auth_mode if config is not None else AuthMode.OIDC
+    try:
+        normalized_subject, identity_ctx = authenticate(
+            auth_mode=auth_mode,
+            token=token,
+            oidc_verifier=getattr(request.app.state, "verifier", None),
+            basis_local_trust_config=getattr(
+                request.app.state, "basis_local_token_trust_config", None
+            ),
+        )
+    except AuthNotConfiguredError as exc:
+        log.error("Authentication not configured for auth_mode=%s: %s", auth_mode.value, exc)
+        return _authentication_failed("Authentication not configured", correlation_id)
+    except SubjectMappingError as exc:
+        log.info("Subject mapping failed: %s", exc)
+        return _authentication_failed("Identity normalization failed", correlation_id)
+    except AuthenticationError as exc:
+        log.info("Token verification failed: %s", exc)
+        return _authentication_failed("Token verification failed", correlation_id)
+    except Exception:
+        log.exception("Unexpected error during authentication")
+        return _authentication_failed("Token verification failed", correlation_id)
+
+    # ── 4. Operation-producer trust classification ───────────────────────────
+    # Derived fresh, per request, from the already-authenticated subject and
+    # current gateway configuration only (§5a) — never from anything the
+    # caller supplied in the request body.
+    trusted_subject_ids = (
+        config.operation_producer_subject_ids if config is not None else frozenset()
+    )
+    producer_trust = classify_operation_producer(normalized_subject, trusted_subject_ids)
+
+    # ── 5. Provenance-gated composition ──────────────────────────────────────
+    # compose_operation_aware_input (PR 4) rejects producer-only fields from
+    # a non-producer caller (UntrustedOperationProducerContextError),
+    # reserved-namespace context collisions (ReservedContextKeyError), and
+    # composes the canonical action/resource identifier by reusing
+    # core/actions.py/core/resources.py unchanged. All of these are
+    # gateway-owned, pre-kernel failures — the kernel is never invoked for
+    # any of them.
+    try:
+        composed = compose_operation_aware_input(
+            oa_request,
+            subject=normalized_subject,
+            identity_context=identity_ctx,
+            producer_trust=producer_trust,
+            correlation_id=correlation_id,
+        )
+    except OperationAwareCompositionError as exc:
+        return _validation_failed(str(exc), correlation_id)
+    except (ActionCompositionError, ResourceCompositionError) as exc:
+        return _validation_failed(str(exc), correlation_id)
+    except CompositionInternalError:
+        # Gateway-internal invariant violation (e.g. an inconsistent
+        # identity/producer-trust triple) — never triggered by caller
+        # content. Fails closed without exposing internal detail.
+        log.exception("Gateway-internal composition invariant violated")
+        return _internal_error(correlation_id)
+
+    # ── 6. Retrieve the initialized operation-aware evaluator ────────────────
+    # Never constructed here — only ever the one built once at startup (PR 5)
+    # after passing the startup semantic preflight. Enabled-but-unavailable
+    # (bundle missing/invalid, or startup otherwise incomplete) returns 503
+    # with no kernel result fabricated.
+    evaluator: OperationAwareGatewayEvaluator | None = getattr(
+        request.app.state, "operation_aware_evaluator", None
+    )
+    if evaluator is None:
+        return _evaluator_unavailable(correlation_id)
+
+    # ── 7. Invoke the kernel exactly once ─────────────────────────────────────
+    # OperationAwareEnforcementPoint.evaluate() is documented to never raise;
+    # OperationAwareGatewayEvaluator.evaluate() itself can still raise
+    # OperationAwareRequestConstructionError for a gateway-owned, pre-kernel
+    # construction failure (the kernel is not invoked in that case — a 400,
+    # not a fabricated kernel failure). Any other exception is treated
+    # defensively as an unexpected integration failure: fails closed with a
+    # generic 500, never claiming a kernel result was produced.
+    try:
+        result = evaluator.evaluate(composed)
+    except OperationAwareRequestConstructionError as exc:
+        return _validation_failed(str(exc), correlation_id)
+    except Exception:
+        log.exception("Unexpected exception during operation-aware evaluation")
+        return _evaluation_failed_closed(correlation_id)
+
+    # ── 8. Classify the HTTP response and return the real kernel result ─────
+    # The public enforcement result is authoritative: evaluation_status,
+    # outcome, failure_reason, and disposition are preserved exactly (§9).
+    # classify_operation_aware_http_status is the sole place HTTP status is
+    # derived from those facts — never inline conditionals, never derived
+    # from disposition alone.
+    response_body = OperationAwareEvaluateResponse.from_result(result)
+    status_code = classify_operation_aware_http_status(
+        evaluation_status=result.response.evaluation_status,
+        outcome=result.response.outcome,
+        failure_reason=result.response.failure_reason,
+    )
 
     # X-Correlation-ID is added to all responses by CorrelationMiddleware.
     return JSONResponse(

@@ -89,13 +89,22 @@ policy-bundle identity fields), any producer-trust flag
 this rollout — a caller that supplies it receives the same rejection any
 other unrecognized field would, not silent acceptance-and-discard.
 
-Not wired to a route
----------------------
-This model is not imported by ``api/routes.py``, ``main.py``, or any other
-runtime module in this PR. No kernel request composition occurs here.
+Wired to a route (PR 6)
+-------------------------
+This model is imported by ``api/routes.py`` and is the shape-validation
+layer for ``POST /v1/evaluate/operation-aware`` — see
+``api.routes.evaluate_operation_aware``. This module still performs no
+kernel request composition itself: shape validation (this class) is layer
+1 of the two-layer model described above; provenance/trust validation and
+kernel request construction remain
+``basis_gateway.core.operation_aware_composition``/
+``basis_gateway.core.operation_aware_evaluator``'s responsibility, invoked
+by the route after this model validates successfully.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from basis_core.decisions import OperationIntent
 from basis_core.domain import (
@@ -108,6 +117,7 @@ from basis_core.domain import (
     OperationAwareRiskContext,
     OperationAwareSafetyContext,
 )
+from basis_core.enforcement import OperationAwareEnforcementResult
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -205,3 +215,89 @@ class OperationAwareEvaluateRequest(BaseModel):
                 "identity_evidence_reference, adapter_evidence_reference) instead."
             )
         return v
+
+
+class OperationAwareEvaluateResponse(BaseModel):
+    """Response body for ``POST /v1/evaluate/operation-aware`` (PR 6, §9/§16).
+
+    Preserves the public kernel result — ``OperationAwareEnforcementResult``
+    (``basis_gateway.core.operation_aware_evaluator.OperationAwareGatewayEvaluator
+    .evaluate()``'s return value) — without reinterpretation. Every field
+    below is copied verbatim from ``result.response``/``result.disposition``;
+    none is recomputed, rewritten, or gateway-synthesized. See
+    ``from_result`` and
+    ``docs/implementation/operation-aware-gateway-integration-plan.md`` §9
+    ("Kernel Outcome Versus Gateway Disposition") for the invariants this
+    model exists to preserve:
+
+    - ``outcome`` and ``failure_reason`` are preserved exactly, including
+      ``None`` when not applicable (a completed result has no
+      ``failure_reason``; a failed result has no ``outcome``).
+    - ``disposition`` is the kernel-*computed* value
+      (``basis_core.enforcement.EnforcementDisposition``) — never
+      gateway-recomputed from ``outcome``.
+    - ``NOT_APPLICABLE`` is preserved as ``"not_applicable"`` in ``outcome``,
+      never rewritten to ``"deny"`` (only the gateway's separately-derived
+      HTTP status collapses ``deny``/``not_applicable`` to the same code —
+      see ``basis_gateway.api.operation_aware_classification``).
+    - A failed evaluation is preserved as ``evaluation_status="failed"``,
+      ``outcome=None``, and the kernel's own governed ``failure_reason`` —
+      never rewritten as an explicit policy denial.
+
+    This model carries no raw request data, tokens, claims, policy
+    documents, or protocol payloads, and no gateway-authored explanation or
+    invented reason code — ``explanation``/``reason_code`` are passed
+    through only when the kernel itself populated them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    correlation_id: str | None = None
+    evaluation_status: str
+    outcome: str | None = None
+    failure_reason: str | None = None
+    bundle_id: str | None = None
+    bundle_version: str | None = None
+    trace_id: str | None = None
+    reason_code: str | None = None
+    explanation: str | None = None
+    disposition: str
+    # Only ever non-None if a future caller of OperationAwareGatewayEvaluator
+    # requests trace embedding (embed_evaluation_trace=True) — PR 5/PR 6's
+    # own evaluator wrapper does not request it, so this is always None
+    # today. Represented as a plain dict (via the trace's own model_dump()),
+    # never as an imported internal trace type, so this module never imports
+    # basis_core.evaluation.* / basis_core.audit.operation_aware.evaluation_trace
+    # directly.
+    evaluation_trace: dict[str, Any] | None = None
+
+    @classmethod
+    def from_result(cls, result: OperationAwareEnforcementResult) -> OperationAwareEvaluateResponse:
+        """Build the HTTP response body from a real ``OperationAwareEnforcementResult``.
+
+        Copies every field verbatim from ``result.response``/
+        ``result.disposition`` — no reinterpretation, no recomputation. See
+        this class's docstring for the invariants this preserves.
+        """
+        response = result.response
+        evaluation_trace_dump: dict[str, Any] | None = None
+        if response.evaluation_trace is not None:
+            evaluation_trace_dump = response.evaluation_trace.model_dump(mode="json")
+
+        return cls(
+            request_id=response.request_id,
+            correlation_id=response.correlation_id,
+            evaluation_status=response.evaluation_status.value,
+            outcome=response.outcome.value if response.outcome is not None else None,
+            failure_reason=(
+                response.failure_reason.value if response.failure_reason is not None else None
+            ),
+            bundle_id=response.bundle_id,
+            bundle_version=response.bundle_version,
+            trace_id=response.trace_id,
+            reason_code=response.reason_code,
+            explanation=response.explanation,
+            disposition=result.disposition.value,
+            evaluation_trace=evaluation_trace_dump,
+        )

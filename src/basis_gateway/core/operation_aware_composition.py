@@ -13,11 +13,16 @@ Part of the operation-aware gateway integration
 - the gateway-generated correlation ID (middleware, unchanged),
 
 and produces an immutable ``ComposedOperationAwareInput`` — the set of
-values a later PR will use to construct
-``basis_core.decisions.OperationAwareDecisionRequest``. This module does
-**not** construct that kernel request, does not load a ``PolicyBundle``,
-does not construct ``OperationAwareEnforcementPoint``, and does not invoke
-``basis-core`` at all. It is not reachable from any HTTP endpoint.
+values ``basis_gateway.core.operation_aware_evaluator`` uses to construct
+``basis_core.decisions.OperationAwareDecisionRequest``. This module itself
+still does **not** construct that kernel request, does not load a
+``PolicyBundle``, does not construct ``OperationAwareEnforcementPoint``, and
+does not invoke ``basis-core`` at all — those remain
+``operation_aware_evaluator``'s responsibility. As of PR 6, this module's
+``compose_operation_aware_input`` is reachable at request time via
+``POST /v1/evaluate/operation-aware`` (``api.routes.evaluate_operation_aware``),
+which calls it after authentication and before invoking the kernel
+evaluator.
 
 Reused, not reinvented
 ------------------------
