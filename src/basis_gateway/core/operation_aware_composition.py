@@ -448,6 +448,25 @@ def compose_operation_aware_input(
         else ProvenanceClassification.GATEWAY_DERIVED
     )
 
+    # context: derived from the final, already-copied combined_context (step
+    # 7), after action/resource composition has finished — never from
+    # request.context directly. request.context is validated empty-only by
+    # OperationAwareEvaluateRequest (operation_aware_schemas.py), so an
+    # ordinary caller can never populate combined_context with anything but
+    # gateway-generated basis_gateway.* composition evidence. There is
+    # therefore no remaining case in which this context is
+    # caller-supplied/untrusted: it is either empty (no composition
+    # occurred) or entirely gateway-derived (composition evidence was
+    # added) — never VERIFIED (it is not independently authenticated the
+    # way authorization_subject_* fields are) and never
+    # UNTRUSTED_CALLER_ASSERTED (arbitrary caller context can no longer
+    # reach this function at all).
+    context_provenance = (
+        ProvenanceClassification.GATEWAY_DERIVED
+        if combined_context
+        else ProvenanceClassification.UNAVAILABLE
+    )
+
     operation_producer_subject_id_provenance = (
         ProvenanceClassification.VERIFIED
         if producer_trust.operation_producer_subject_id is not None
@@ -470,7 +489,7 @@ def compose_operation_aware_input(
         "action": action_provenance,
         "resource_id": resource_id_provenance,
         "resource_type": resource_type_provenance,
-        "context": ProvenanceClassification.UNTRUSTED_CALLER_ASSERTED,
+        "context": context_provenance,
         "operation_intent": _producer_only_field_provenance(request.operation_intent),
         "location": _producer_only_field_provenance(request.location),
         "device": _producer_only_field_provenance(request.device),

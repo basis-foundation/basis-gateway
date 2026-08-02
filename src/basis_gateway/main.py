@@ -8,6 +8,8 @@ Lifespan:
        - "basis_local_token": BASIS-local trust config → marks "basis_local_token_configured"
   4. Load policy from POLICY_PATH.                         → marks "policy_loaded"
   5. Initialize GatewayEvaluator.                           → marks "evaluator_initialized"
+  6. Operation-aware integration (PR 5, additive, feature-flagged).
+       Only runs when OPERATION_AWARE_ENABLED=true          → marks "operation_aware_evaluator"
 
 Startup fails predictably when evaluation is enabled and required dependencies
 are unavailable. The service still starts (so /health responds), but /ready
@@ -15,7 +17,15 @@ returns 503 until all components are ready.
 
 Only the components for the configured auth_mode are registered: in "oidc"
 mode, "basis_local_token_configured" is never registered (and vice versa),
-so the inactive mode's readiness never blocks the active one.
+so the inactive mode's readiness never blocks the active one. Likewise,
+"operation_aware_evaluator" is only registered when OPERATION_AWARE_ENABLED
+is true — a deployment that does not enable the feature sees no readiness
+behavior change at all. Step 6's single readiness component is a narrow,
+temporary integration for this PR only; PR 8 replaces it with the full
+four-component readiness model described in the integration plan's §13
+(``operation_aware_bundle_loaded``, ``operation_aware_evaluator_initialized``,
+``operation_aware_policy_semantically_valid``, plus the informational
+``operation_aware_mode_enabled``).
 
 app.state holds:
   config                          — GatewayConfig
@@ -23,6 +33,11 @@ app.state holds:
   basis_local_token_trust_config  — BasisLocalTokenTrustConfig | None
                                      (auth_mode="basis_local_token")
   evaluator                       — GatewayEvaluator | None
+  operation_aware_evaluator       — OperationAwareGatewayEvaluator | None
+                                     (populated only when
+                                     OPERATION_AWARE_ENABLED=true and startup
+                                     succeeds; not reachable from any route
+                                     in this PR)
 """
 
 from __future__ import annotations
@@ -41,13 +56,21 @@ from basis_gateway.audit.writer import build_audit_writer
 from basis_gateway.config import (
     AuthMode,
     EvaluationConfigError,
+    OperationAwareConfigError,
     configure_logging,
     load_config,
     validate_evaluation_config,
+    validate_operation_aware_config,
 )
 from basis_gateway.core.evaluator import build_evaluator
+from basis_gateway.core.operation_aware_evaluator import (
+    OperationAwarePreflightError,
+    OperationAwareRequestConstructionError,
+    load_and_build_operation_aware_evaluator,
+)
 from basis_gateway.middleware.correlation import CorrelationMiddleware
 from basis_gateway.policy.loader import PolicyLoadError, load_policy_engine
+from basis_gateway.policy.operation_aware_loader import OperationAwarePolicyLoadError
 from basis_gateway.readiness import get_readiness_state
 
 log = logging.getLogger(__name__)
@@ -67,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.basis_local_token_trust_config = None
         app.state.evaluator = None
         app.state.audit_writer = None
+        app.state.operation_aware_evaluator = None
         log.info(
             "basis-gateway starting service=%s env=%s log_level=%s",
             config.service_name,
@@ -203,6 +227,62 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.warning(
                 "POLICY_PATH not set — evaluator not initialized; "
                 "set POLICY_PATH to enable authorization evaluation"
+            )
+
+        # ── 6. Operation-aware integration (PR 5, additive) ───────────────
+        # Disabled by default (OPERATION_AWARE_ENABLED unset or "false"):
+        # no bundle load, no evaluator construction, no semantic preflight,
+        # and no readiness component is registered — existing v0.1 startup
+        # behavior above is completely unaffected. This is a separate
+        # feature flag, separate configuration, separate loader, and
+        # separate evaluator instance from the v0.1 path; it never
+        # replaces or mutates app.state.evaluator/app.state.policy_engine.
+        if config.operation_aware_enabled:
+            try:
+                validate_operation_aware_config(config)
+            except OperationAwareConfigError as exc:
+                log.error(
+                    "Operation-aware configuration validation failed "
+                    "[operation_aware_evaluator]: %s — check "
+                    "OPERATION_AWARE_POLICY_BUNDLE_PATH",
+                    exc,
+                )
+                state.mark_not_ready(reason=str(exc), component="operation_aware_evaluator")
+                raise
+
+            bundle_path = config.operation_aware_policy_bundle_path
+            assert bundle_path is not None  # guaranteed by validate_operation_aware_config
+            log.info("Loading operation-aware policy bundle from %s", bundle_path)
+            try:
+                operation_aware_evaluator = load_and_build_operation_aware_evaluator(bundle_path)
+            except (
+                OperationAwarePolicyLoadError,
+                OperationAwareRequestConstructionError,
+                OperationAwarePreflightError,
+            ) as exc:
+                log.error(
+                    "Operation-aware evaluator initialization failed "
+                    "[operation_aware_evaluator, %s]: %s — check "
+                    "OPERATION_AWARE_POLICY_BUNDLE_PATH and the bundle's structural/semantic "
+                    "validity",
+                    type(exc).__name__,
+                    exc,
+                )
+                state.mark_not_ready(reason=str(exc), component="operation_aware_evaluator")
+                raise
+
+            app.state.operation_aware_evaluator = operation_aware_evaluator
+            state.mark_ready("operation_aware_evaluator")
+            log.info(
+                "Operation-aware evaluator initialized and passed startup semantic preflight "
+                "bundle_path=%s",
+                bundle_path,
+            )
+        else:
+            log.info(
+                "OPERATION_AWARE_ENABLED not set — operation-aware integration disabled; "
+                "set OPERATION_AWARE_ENABLED=true and OPERATION_AWARE_POLICY_BUNDLE_PATH to "
+                "enable it"
             )
 
         log.info("basis-gateway ready")

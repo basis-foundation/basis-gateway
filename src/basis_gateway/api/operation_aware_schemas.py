@@ -31,14 +31,36 @@ producer status.
 
 Reused, not forked, normalized-operation fields
 ------------------------------------------------
-``request_id``, ``action``, ``resource_type``, ``resource_id``, and
-``context`` carry the same conceptual meanings as ``EvaluateRequest``
-(``api/schemas.py``): ``action`` may be a composite action or a bare verb;
-``resource_type``/``resource_id`` may support later gateway composition;
-``context`` carries caller-provided string key/value pairs. This module does
-not duplicate the full action/resource composition logic — that remains
+``request_id``, ``action``, ``resource_type``, and ``resource_id`` carry the
+same conceptual meanings as ``EvaluateRequest`` (``api/schemas.py``):
+``action`` may be a composite action or a bare verb; ``resource_type``/
+``resource_id`` may support later gateway composition. This module does not
+duplicate the full action/resource composition logic — that remains
 ``core/actions.py``/``core/resources.py`` logic, reused unchanged by a later
-PR (§7).
+PR (§7). ``context`` is reused in *name and type* only
+(``dict[str, str]``, defaulting to an independent ``{}`` per instance) — its
+*accepted values* do not mirror ``EvaluateRequest``'s: this model does not
+support arbitrary caller-provided free-form context as a normalized
+operation-aware field. See the next section for the currently-enforced,
+empty-only contract and why.
+
+``context`` is empty-only on the operation-aware path (PR 5)
+----------------------------------------------------------------
+Unlike v0.1's ``EvaluateRequest``, the released public
+``basis_core.decisions.OperationAwareDecisionRequest`` has **no free-form
+``context: dict[str, str]`` field** — it deliberately replaces that
+catch-all with governed, explicit, named context categories (see
+``basis_gateway.core.operation_aware_evaluator``'s module docstring). A
+caller-supplied, non-empty ``context`` on this model would therefore be
+accepted here only to be silently unrepresentable at the kernel boundary —
+this module refuses to do that. ``context`` remains a structurally present
+field (an omitted value still defaults to an independent ``{}`` per
+instance, and an explicit ``{}`` is accepted) so this model's shape stays
+compatible with ``EvaluateRequest``'s, but any non-empty value fails
+validation clearly, via ``operation_aware_context_must_be_empty`` below.
+This is a temporary, governed restriction for this rollout — not a
+structural claim that free-form context can never be added to the
+operation-aware contract later.
 
 Operation-aware context fields reuse basis-core's public domain models
 ------------------------------------------------------------------------
@@ -107,8 +129,11 @@ class OperationAwareEvaluateRequest(BaseModel):
                     gateway responsibility, not performed here.
     resource_type   Optional. May support later gateway composition.
     resource_id     Optional. May be local, typed, or absent.
-    context         Caller-provided string key/value context. Defaults to
-                    an empty, independent dict per instance.
+    context         Empty-only (not a supported free-form field on this
+                    model — see this module's docstring, "``context`` is
+                    empty-only on the operation-aware path"). Defaults to
+                    an empty, independent dict per instance; a non-empty
+                    value fails validation.
 
     Operation-aware context (all optional; absent stays ``None``)
     ─────────────────────────────────────────────────────────────
@@ -155,4 +180,28 @@ class OperationAwareEvaluateRequest(BaseModel):
     def action_not_empty(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("action must not be empty")
+        return v
+
+    @field_validator("context")
+    @classmethod
+    def operation_aware_context_must_be_empty(cls, v: dict[str, str]) -> dict[str, str]:
+        """Reject non-empty free-form context (temporary, governed restriction).
+
+        The public ``OperationAwareDecisionRequest`` has no free-form
+        ``context`` field to map this onto (see this module's docstring,
+        "``context`` is empty-only on the operation-aware path"). An omitted
+        ``context`` still defaults to ``{}``; an explicit ``{}`` is accepted
+        unchanged. Any non-empty value fails validation clearly, rather than
+        being accepted here and silently discarded at kernel-request
+        construction time.
+        """
+        if v:
+            raise ValueError(
+                "free-form context is not supported by the operation-aware request "
+                "contract; OperationAwareDecisionRequest has no context field to map "
+                "it onto. Supply operation-aware context via the dedicated typed "
+                "fields (operation_intent, location, device, protocol_context, "
+                "safety_context, environment_context, risk_context, "
+                "identity_evidence_reference, adapter_evidence_reference) instead."
+            )
         return v
