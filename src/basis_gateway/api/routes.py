@@ -43,6 +43,58 @@ from basis_gateway.audit.gateway_events import (
     VALIDATION_FAILED,
     emit_gateway_event,
 )
+from basis_gateway.audit.operation_aware_gateway_events import (
+    AUTHENTICATION_FAILED as OA_AUTHENTICATION_FAILED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    COMPOSITION_REJECTED as OA_COMPOSITION_REJECTED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    EVALUATION_FAILED_CLOSED as OA_EVALUATION_FAILED_CLOSED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    EVALUATOR_UNAVAILABLE as OA_EVALUATOR_UNAVAILABLE,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    OA_AUDIT_RECOVERY_PROBE,
+    REASON_ACTION_OR_RESOURCE_COMPOSITION_FAILED,
+    REASON_COMPOSITION_INTERNAL_ERROR,
+    REASON_PRODUCER_CONTEXT_REJECTED,
+    REASON_RESERVED_CONTEXT_KEY,
+    emit_operation_aware_completed_event,
+    emit_operation_aware_missing_evidence_event,
+    emit_operation_aware_system_event,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_EVALUATION_EXCEPTION as OA_REASON_EVALUATION_EXCEPTION,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_EVALUATOR_NOT_INITIALIZED as OA_REASON_EVALUATOR_NOT_INITIALIZED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_IDENTITY_NORMALIZATION_FAILED as OA_REASON_IDENTITY_NORMALIZATION_FAILED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_INVALID_DECISION_REQUEST as OA_REASON_INVALID_DECISION_REQUEST,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_INVALID_FIELDS as OA_REASON_INVALID_FIELDS,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_INVALID_TOKEN as OA_REASON_INVALID_TOKEN,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_MALFORMED_BODY as OA_REASON_MALFORMED_BODY,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_MISSING_TOKEN as OA_REASON_MISSING_TOKEN,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    REASON_VERIFIER_NOT_CONFIGURED as OA_REASON_VERIFIER_NOT_CONFIGURED,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    VALIDATION_FAILED as OA_VALIDATION_FAILED,
+)
 from basis_gateway.auth.errors import AuthenticationError, SubjectMappingError, TokenExtractionError
 from basis_gateway.auth.oidc import extract_bearer_token
 from basis_gateway.auth.operation_producer import classify_operation_producer
@@ -59,6 +111,8 @@ from basis_gateway.core.evaluator import GatewayEvaluator
 from basis_gateway.core.operation_aware_composition import (
     CompositionInternalError,
     OperationAwareCompositionError,
+    ReservedContextKeyError,
+    UntrustedOperationProducerContextError,
     compose_operation_aware_input,
 )
 from basis_gateway.core.operation_aware_evaluator import (
@@ -238,6 +292,56 @@ def _internal_error(correlation_id: str) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Shared AUDIT_FAIL_CLOSED strict-mode precheck
+# ---------------------------------------------------------------------------
+# One helper, reused unchanged by both /v1/evaluate and
+# /v1/evaluate/operation-aware (PR 7), so the two endpoints' strict-mode
+# semantics can never subtly diverge. Each caller supplies only its own
+# probe-emission callback so the two endpoints' audit trails remain
+# distinguishable (v0.1's AUDIT_RECOVERY_PROBE vs. the operation-aware
+# endpoint's own OA_AUDIT_RECOVERY_PROBE action) without duplicating the
+# control-flow logic itself.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_audit_fail_closed_response(
+    *,
+    config: Any,
+    audit_writer: Any,
+    correlation_id: str,
+    emit_probe: Any,
+) -> JSONResponse | None:
+    """Return a 503 response when AUDIT_FAIL_CLOSED=true and the writer is
+    degraded and stays degraded after a recovery-probe attempt; ``None``
+    otherwise (request should proceed normally).
+
+    When ``AUDIT_FAIL_CLOSED=true`` and *audit_writer* is degraded, first
+    calls *emit_probe* — a zero-argument callback that attempts a safe write
+    carrying no request secrets. If the probe write succeeds the writer
+    self-heals and this function returns ``None`` (the request proceeds). If
+    the probe fails the writer stays degraded and this function returns the
+    existing ``_audit_fail_closed`` 503 response — the kernel is never
+    invoked for that request.
+    """
+    if not (
+        config is not None
+        and getattr(config, "audit_fail_closed", False)
+        and audit_writer is not None
+        and getattr(audit_writer, "degraded", False)
+    ):
+        return None
+
+    emit_probe()
+
+    if getattr(audit_writer, "degraded", True):
+        log.error("Audit writer degraded and AUDIT_FAIL_CLOSED=true; rejecting request")
+        return _audit_fail_closed(correlation_id)
+
+    log.info("Audit writer recovered via fail-closed probe; proceeding with request")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/evaluate
 # ---------------------------------------------------------------------------
 
@@ -309,31 +413,20 @@ async def evaluate(
     # exit the degraded state without a process restart.  The probe contains no
     # authentication material and makes no authorization decision.
     config = getattr(request.app.state, "config", None)
-    if (
-        config is not None
-        and getattr(config, "audit_fail_closed", False)
-        and audit_writer is not None
-        and getattr(audit_writer, "degraded", False)
-    ):
-        # Probe: attempt a safe write that carries no request secrets.
-        emit_gateway_event(
+    fail_closed_response = _resolve_audit_fail_closed_response(
+        config=config,
+        audit_writer=audit_writer,
+        correlation_id=correlation_id,
+        emit_probe=lambda: emit_gateway_event(
             audit_writer,
             action=AUDIT_RECOVERY_PROBE,
             correlation_id=correlation_id,
             http_method=http_method,
             request_path=request_path,
-        )
-
-        if getattr(audit_writer, "degraded", True):
-            # Probe failed — writer still degraded; block the request.
-            log.error(
-                "Audit writer degraded and AUDIT_FAIL_CLOSED=true; rejecting /v1/evaluate request"
-            )
-            return _audit_fail_closed(correlation_id)
-        # Probe succeeded — writer recovered; fall through to normal evaluation.
-        log.info(
-            "Audit writer recovered via fail-closed probe; proceeding with /v1/evaluate request"
-        )
+        ),
+    )
+    if fail_closed_response is not None:
+        return fail_closed_response
 
     # ── 1. Parse and validate request body ──────────────────────────────────
     try:
@@ -703,12 +796,13 @@ async def evaluate_operation_aware(
     kernel result exists) — no kernel outcome, failure reason, disposition,
     or trace is ever fabricated for those cases.
 
-    PR 6 does not emit gateway-level audit events for this endpoint (see
-    ``docs/implementation/operation-aware-gateway-integration-plan.md``'s
-    Audit Boundary — full ``GatewayAuditEvent`` assembly is PR 7's scope);
-    the real kernel result (including its ``AuditEvidence``) is still
-    produced and returned to the caller, so no evidence PR 7 will need is
-    lost.
+    Gateway audit events are emitted at every significant outcome (PR 7),
+    mirroring ``/v1/evaluate``'s own coverage: every pre-kernel rejection
+    emits a gateway-level system event (no ``AuditEvidence`` — the kernel
+    was never invoked), and every real kernel invocation emits exactly one
+    completed durable record combining a contract-shaped
+    ``GatewayAuditEvent`` with the complete, unmodified kernel-produced
+    ``AuditEvidence`` — see ``basis_gateway.audit.operation_aware_gateway_events``.
     """
     # Correlation ID is generated by CorrelationMiddleware and attached to
     # request.state before this handler is called — the gateway-generated ID
@@ -716,6 +810,31 @@ async def evaluate_operation_aware(
     # X-Correlation-ID headers are ignored by the middleware itself.
     correlation_id: str = request.state.correlation_id
     config = getattr(request.app.state, "config", None)
+    audit_writer = getattr(request.app.state, "audit_writer", None)
+    http_method = request.method
+    request_path = request.url.path
+
+    # ── 0. Strict fail-closed check ──────────────────────────────────────────
+    # Reuses the exact existing AUDIT_FAIL_CLOSED semantics established for
+    # /v1/evaluate (see _resolve_audit_fail_closed_response above) — same
+    # writer, same threshold/config, same recovery-probe-then-reject control
+    # flow. Only the probe's own recorded action name differs
+    # (OA_AUDIT_RECOVERY_PROBE) so the two endpoints' audit trails stay
+    # distinguishable.
+    fail_closed_response = _resolve_audit_fail_closed_response(
+        config=config,
+        audit_writer=audit_writer,
+        correlation_id=correlation_id,
+        emit_probe=lambda: emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUDIT_RECOVERY_PROBE,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+        ),
+    )
+    if fail_closed_response is not None:
+        return fail_closed_response
 
     # ── 1. Parse and shape-validate the request body ────────────────────────
     # OperationAwareEvaluateRequest's extra="forbid" rejects: unknown fields,
@@ -729,16 +848,53 @@ async def evaluate_operation_aware(
     except ValidationError as exc:
         errors = exc.errors(include_url=False)
         message = "; ".join(f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors)
+        is_json_error = any(e.get("type") == "json_invalid" for e in errors)
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_VALIDATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_MALFORMED_BODY if is_json_error else OA_REASON_INVALID_FIELDS,
+            http_status=400,
+        )
         return _validation_failed(message, correlation_id)
     except Exception:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_VALIDATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_MALFORMED_BODY,
+            http_status=400,
+        )
         return _validation_failed("Malformed request body", correlation_id)
 
     # ── 2. Bearer extraction ─────────────────────────────────────────────────
     try:
         token = extract_bearer_token(authorization)
     except TokenExtractionError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_MISSING_TOKEN,
+            http_status=401,
+        )
         return _authentication_required(str(exc), correlation_id)
     except AuthenticationError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_MISSING_TOKEN,
+            http_status=401,
+        )
         return _authentication_required(str(exc), correlation_id)
 
     # ── 3. Runtime authentication (auth-mode dispatch) ───────────────────────
@@ -758,15 +914,51 @@ async def evaluate_operation_aware(
         )
     except AuthNotConfiguredError as exc:
         log.error("Authentication not configured for auth_mode=%s: %s", auth_mode.value, exc)
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_VERIFIER_NOT_CONFIGURED,
+            http_status=401,
+        )
         return _authentication_failed("Authentication not configured", correlation_id)
     except SubjectMappingError as exc:
         log.info("Subject mapping failed: %s", exc)
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_IDENTITY_NORMALIZATION_FAILED,
+            http_status=401,
+        )
         return _authentication_failed("Identity normalization failed", correlation_id)
     except AuthenticationError as exc:
         log.info("Token verification failed: %s", exc)
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_INVALID_TOKEN,
+            http_status=401,
+        )
         return _authentication_failed("Token verification failed", correlation_id)
     except Exception:
         log.exception("Unexpected error during authentication")
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_AUTHENTICATION_FAILED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_INVALID_TOKEN,
+            http_status=401,
+        )
         return _authentication_failed("Token verification failed", correlation_id)
 
     # ── 4. Operation-producer trust classification ───────────────────────────
@@ -794,15 +986,69 @@ async def evaluate_operation_aware(
             producer_trust=producer_trust,
             correlation_id=correlation_id,
         )
+    except UntrustedOperationProducerContextError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_COMPOSITION_REJECTED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_PRODUCER_CONTEXT_REJECTED,
+            http_status=400,
+            subject_id=normalized_subject.subject_id,
+        )
+        return _validation_failed(str(exc), correlation_id)
+    except ReservedContextKeyError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_COMPOSITION_REJECTED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_RESERVED_CONTEXT_KEY,
+            http_status=400,
+            subject_id=normalized_subject.subject_id,
+        )
+        return _validation_failed(str(exc), correlation_id)
     except OperationAwareCompositionError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_COMPOSITION_REJECTED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_ACTION_OR_RESOURCE_COMPOSITION_FAILED,
+            http_status=400,
+            subject_id=normalized_subject.subject_id,
+        )
         return _validation_failed(str(exc), correlation_id)
     except (ActionCompositionError, ResourceCompositionError) as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_COMPOSITION_REJECTED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_ACTION_OR_RESOURCE_COMPOSITION_FAILED,
+            http_status=400,
+            subject_id=normalized_subject.subject_id,
+        )
         return _validation_failed(str(exc), correlation_id)
     except CompositionInternalError:
         # Gateway-internal invariant violation (e.g. an inconsistent
         # identity/producer-trust triple) — never triggered by caller
         # content. Fails closed without exposing internal detail.
         log.exception("Gateway-internal composition invariant violated")
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_EVALUATION_FAILED_CLOSED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=REASON_COMPOSITION_INTERNAL_ERROR,
+            http_status=500,
+            subject_id=normalized_subject.subject_id,
+        )
         return _internal_error(correlation_id)
 
     # ── 6. Retrieve the initialized operation-aware evaluator ────────────────
@@ -814,6 +1060,16 @@ async def evaluate_operation_aware(
         request.app.state, "operation_aware_evaluator", None
     )
     if evaluator is None:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_EVALUATOR_UNAVAILABLE,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_EVALUATOR_NOT_INITIALIZED,
+            http_status=503,
+            subject_id=normalized_subject.subject_id,
+        )
         return _evaluator_unavailable(correlation_id)
 
     # ── 7. Invoke the kernel exactly once ─────────────────────────────────────
@@ -827,9 +1083,29 @@ async def evaluate_operation_aware(
     try:
         result = evaluator.evaluate(composed)
     except OperationAwareRequestConstructionError as exc:
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_COMPOSITION_REJECTED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_INVALID_DECISION_REQUEST,
+            http_status=400,
+            subject_id=normalized_subject.subject_id,
+        )
         return _validation_failed(str(exc), correlation_id)
     except Exception:
         log.exception("Unexpected exception during operation-aware evaluation")
+        emit_operation_aware_system_event(
+            audit_writer,
+            action=OA_EVALUATION_FAILED_CLOSED,
+            correlation_id=correlation_id,
+            http_method=http_method,
+            request_path=request_path,
+            reason=OA_REASON_EVALUATION_EXCEPTION,
+            http_status=500,
+            subject_id=normalized_subject.subject_id,
+        )
         return _evaluation_failed_closed(correlation_id)
 
     # ── 8. Classify the HTTP response and return the real kernel result ─────
@@ -844,6 +1120,31 @@ async def evaluate_operation_aware(
         outcome=result.response.outcome,
         failure_reason=result.response.failure_reason,
     )
+
+    # ── 9. Durable gateway audit record (PR 7) ───────────────────────────────
+    # Assembled after HTTP classification so it can record the actual
+    # selected status. Exactly one completed record per real kernel
+    # invocation — never two, never zero. When the kernel could not produce
+    # trustworthy AuditEvidence (the enforcement point's own internal-error
+    # fallback), no GatewayAuditEvent/audit_evidence_id is fabricated; a
+    # dedicated integration-failure system event is written instead.
+    if result.audit_evidence is not None:
+        emit_operation_aware_completed_event(
+            audit_writer,
+            result=result,
+            composed=composed,
+            http_status=status_code,
+            request_path=request_path,
+            http_method=http_method,
+        )
+    else:
+        emit_operation_aware_missing_evidence_event(
+            audit_writer,
+            composed=composed,
+            http_status=status_code,
+            request_path=request_path,
+            http_method=http_method,
+        )
 
     # X-Correlation-ID is added to all responses by CorrelationMiddleware.
     return JSONResponse(

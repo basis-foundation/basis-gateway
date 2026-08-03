@@ -248,18 +248,62 @@ def test_enabled_valid_route_registered_and_requires_auth(monkeypatch, tmp_path)
         assert response.status_code == 401
 
 
-def test_enabled_valid_no_operational_audit_writer_touched(monkeypatch, tmp_path) -> None:
-    """Startup preflight never writes operational audit events — the
-    audit_writer readiness component this PR does not build is untouched,
-    and app.state.audit_writer (only set by the v0.1 path when POLICY_PATH
-    is configured) remains None."""
+def test_enabled_valid_startup_preflight_never_writes_operational_audit_events(
+    monkeypatch, tmp_path
+) -> None:
+    """Startup preflight never writes operational audit events.
+
+    Superseded by PR 7 (operation-aware gateway audit evidence): PR 5's
+    original assertion here was that ``app.state.audit_writer`` stays
+    ``None`` in operation-aware-only mode. PR 7 changes that — the
+    operation-aware endpoint now requires a shared ``GatewayAuditWriter`` of
+    its own (see ``main.py``'s "shared audit writer" step and
+    ``tests/test_operation_aware_endpoint.py``'s writer-lifecycle tests) —
+    so a writer *is* now constructed in this configuration. What this test
+    still proves, unchanged from PR 5: the startup semantic preflight's own
+    result is never written to the operational audit stream.
+
+    ``writer.failed_write_count == 0`` alone would not prove this — it only
+    proves no write *failed*; a successful write would leave that counter at
+    zero too. Instead, ``basis_gateway.audit.writer.LogAuditWriter`` (the
+    concrete inner writer ``build_audit_writer`` constructs) is monkeypatched
+    to a capturing double *before* ``TestClient`` triggers the ASGI lifespan,
+    so every event actually delegated to the writer's inner during the whole
+    startup sequence (including preflight) is captured. Asserting
+    ``captured_events == []`` after startup proves zero writes occurred, not
+    merely zero failures.
+    """
+
+    class _CapturingInnerWriter:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def write(self, event: object) -> None:
+            self.events.append(event)
+
+    captured_holder: dict[str, _CapturingInnerWriter] = {}
+
+    def _capturing_log_audit_writer_factory() -> _CapturingInnerWriter:
+        inner = _CapturingInnerWriter()
+        captured_holder["inner"] = inner
+        return inner
+
+    monkeypatch.setattr(
+        "basis_gateway.audit.writer.LogAuditWriter", _capturing_log_audit_writer_factory
+    )
+
     path = write_bundle(tmp_path, VALID_BUNDLE)
     monkeypatch.setenv("OPERATION_AWARE_ENABLED", "true")
     monkeypatch.setenv("OPERATION_AWARE_POLICY_BUNDLE_PATH", path)
     reset_readiness_state()
     app = create_app()
     with TestClient(app):
-        assert app.state.audit_writer is None
+        writer = app.state.audit_writer
+        assert writer is not None
+        assert get_readiness_state().components.get("audit_writer") is True
+
+    captured_inner = captured_holder["inner"]
+    assert captured_inner.events == []
 
 
 # ---------------------------------------------------------------------------

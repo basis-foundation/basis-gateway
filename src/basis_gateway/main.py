@@ -1,17 +1,33 @@
 """FastAPI application entrypoint for basis-gateway.
 
 Lifespan:
-  1. Load and validate configuration.                     → marks "configuration_loaded"
+  1. Load and validate the GatewayConfig object itself.     → marks "configuration_loaded"
   1a. Register the operation-aware router (PR 6), from this same config,
       when OPERATION_AWARE_ENABLED=true — before any step below that can
       fail, so "enabled but a later step fails" still leaves the endpoint
       registered (returning 503 at request time), not 404.
+  1b. Construct the shared GatewayAuditWriter (PR 7).       → marks "audit_writer"
+       Built whenever POLICY_PATH is set OR
+       OPERATION_AWARE_ENABLED=true — exactly one instance,
+       shared by the v0.1 evaluator (step 5) and the
+       operation-aware endpoint (api.routes) alike. Not
+       built when neither path is enabled. Deliberately
+       placed immediately after config load/router
+       registration and *before* every step below that can
+       itself fail (evaluation-config validation, auth
+       initialization, v0.1 policy loading, operation-aware
+       validation/evaluator construction) — the writer must
+       remain available on app.state even when one of those
+       later steps aborts startup, since the operation-aware
+       endpoint's own audit recording (routes.py) needs it at
+       request time regardless of which later component ends
+       up ready.
   2. Validate evaluation config (fail-early).
   3. Initialize the auth_mode-selected verifier:
        - "oidc" (default): OIDC verifier             → marks "oidc_configured", "jwks_available"
        - "basis_local_token": BASIS-local trust config → marks "basis_local_token_configured"
   4. Load policy from POLICY_PATH.                         → marks "policy_loaded"
-  5. Initialize GatewayEvaluator.                           → marks "evaluator_initialized"
+  5. Initialize GatewayEvaluator (reuses the step 1b writer). → marks "evaluator_initialized"
   6. Operation-aware evaluator construction (PR 5, additive, feature-flagged).
        Only runs when OPERATION_AWARE_ENABLED=true          → marks "operation_aware_evaluator"
 
@@ -37,6 +53,10 @@ app.state holds:
   basis_local_token_trust_config  — BasisLocalTokenTrustConfig | None
                                      (auth_mode="basis_local_token")
   evaluator                       — GatewayEvaluator | None
+  audit_writer                    — GatewayAuditWriter | None (PR 7: shared by
+                                     the v0.1 evaluator and the
+                                     operation-aware endpoint; built whenever
+                                     either path is enabled, see step 4a)
   operation_aware_evaluator       — OperationAwareGatewayEvaluator | None
                                      (populated only when
                                      OPERATION_AWARE_ENABLED=true and startup
@@ -117,9 +137,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Registered from this same successfully-loaded `config` — the sole
         # authoritative configuration load for this startup — immediately
         # after configuration loads and before any step below that can fail
-        # (fail-early validation, auth-mode initialization, policy loading,
-        # operation-aware evaluator construction). This guarantees the
-        # route's registration state depends only on
+        # (the step 1b audit writer, fail-early validation, auth-mode
+        # initialization, policy loading, operation-aware evaluator
+        # construction). This guarantees the route's registration state
+        # depends only on
         # `OPERATION_AWARE_ENABLED`, never on whether a later startup step
         # succeeds: "enabled but evaluator unavailable" must still route to
         # this handler and return 503 at request time, not 404. Guarded by
@@ -135,6 +156,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.operation_aware_router_registered = True
             app.openapi_schema = None
             log.info("Operation-aware endpoint registered path=/v1/evaluate/operation-aware")
+
+        # ── 1b. Shared audit writer (PR 7) ───────────────────────────────────
+        # Exactly one GatewayAuditWriter is constructed per application
+        # instance, shared by the v0.1 evaluator and the operation-aware
+        # evaluator/endpoint alike, whenever *either* runtime path requires
+        # one: v0.1's POLICY_PATH is configured, OR operation-aware
+        # integration is enabled (OPERATION_AWARE_ENABLED=true) — regardless
+        # of whether evaluation-config validation (step 2), authentication
+        # initialization (step 3), v0.1 policy loading (step 4), or
+        # operation-aware validation/evaluator construction (step 6)
+        # ultimately succeeds. Placed here, immediately after configuration
+        # loads and router registration and before any of those steps, so a
+        # later failure in any of them can never leave app.state.audit_writer
+        # unset while the operation-aware route remains registered. Neither
+        # path enabled -> no writer is constructed and app.state.audit_writer
+        # stays None.
+        audit_writer = None
+        if config.policy_path or config.operation_aware_enabled:
+            audit_writer = build_audit_writer(
+                readiness_state=state,
+                failure_threshold=config.audit_failure_threshold,
+            )
+            app.state.audit_writer = audit_writer
+            state.mark_ready("audit_writer")
+            log.info(
+                "Audit writer initialized threshold=%d fail_closed=%s",
+                config.audit_failure_threshold,
+                config.audit_fail_closed,
+            )
 
         # ── 2. Fail-early validation ─────────────────────────────────────────
         # Raises EvaluationConfigError when evaluation is enabled but required
@@ -222,6 +272,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.info("BASIS-local token trust configured issuer=%s", trust_config.issuer)
 
         # ── 4. Policy loading ────────────────────────────────────────────────
+        engine = None
         if config.policy_path:
             log.info("Loading policy from %s", config.policy_path)
             try:
@@ -236,19 +287,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 raise
             state.mark_ready("policy_loaded")
             log.info("Policy loaded path=%s", config.policy_path)
+        else:
+            # No policy path — evaluator stays None.
+            # /v1/evaluate will return 503 if called.
+            log.warning(
+                "POLICY_PATH not set — evaluator not initialized; "
+                "set POLICY_PATH to enable authorization evaluation"
+            )
 
-            # ── 5. Evaluator ─────────────────────────────────────────────────
-            audit_writer = build_audit_writer(
-                readiness_state=state,
-                failure_threshold=config.audit_failure_threshold,
-            )
-            app.state.audit_writer = audit_writer
-            state.mark_ready("audit_writer")
-            log.info(
-                "Audit writer initialized threshold=%d fail_closed=%s",
-                config.audit_failure_threshold,
-                config.audit_fail_closed,
-            )
+        # ── 5. v0.1 evaluator ─────────────────────────────────────────────
+        if config.policy_path:
+            assert engine is not None  # guaranteed by step 4 above
+            assert audit_writer is not None  # guaranteed by step 1b above (policy_path is set)
             evaluator = build_evaluator(
                 engine=engine,
                 audit_writer=audit_writer,
@@ -257,13 +307,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.evaluator = evaluator
             state.mark_ready("evaluator_initialized")
             log.info("Evaluator initialized policy_version=%s", config.policy_version)
-        else:
-            # No policy path — evaluator stays None.
-            # /v1/evaluate will return 503 if called.
-            log.warning(
-                "POLICY_PATH not set — evaluator not initialized; "
-                "set POLICY_PATH to enable authorization evaluation"
-            )
 
         # ── 6. Operation-aware integration (PR 5, additive) ───────────────
         # Disabled by default (OPERATION_AWARE_ENABLED unset or "false"):
