@@ -16,6 +16,17 @@ that catches all write exceptions, logs them as `ERROR`, and increments a
 `failed_write_count` counter. Authorization decisions are never affected by write
 failures. The counter is exposed as a property but has no threshold behavior.
 
+**Shared writer, shared state.** `GatewayAuditWriter` is a single, shared instance used by both
+`POST /v1/evaluate` and `POST /v1/evaluate/operation-aware` (when the operation-aware feature is
+enabled) — see `main.py`'s lifespan. There is one `failed_write_count`, one
+`consecutive_failure_count`, and one `degraded` state, not two independent writers per endpoint.
+A sustained audit failure degrades readiness and (in strict mode) evaluation for both endpoints
+together; there is no per-endpoint audit health. The strict-mode recovery probe (§5.4) is emitted
+under a distinct action name per endpoint (`gateway.audit_recovery_probe` for `/v1/evaluate`,
+`gateway.operation_aware_audit_recovery_probe` for the operation-aware endpoint) purely so the two
+audit trails remain distinguishable — the underlying writer, threshold, and degraded/recovered
+state are identical and shared.
+
 This is a deliberate v0.1 deferral. The open question recorded in `docs/audit-model.md`
 §9 is:
 

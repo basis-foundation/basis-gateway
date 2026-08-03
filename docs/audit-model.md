@@ -409,3 +409,135 @@ semantics, policy lifecycle, or policy history.
 
 There is no mechanism linking `policy_version` to a specific policy file hash, deployment
 artifact, or version control reference. Formalizing that linkage is a future concern.
+
+---
+
+## 10. Operation-Aware Audit Model
+
+This section covers `POST /v1/evaluate/operation-aware` (feature-gated; see
+[`docs/operation-aware-endpoint.md`](operation-aware-endpoint.md)). It extends, and does not
+replace, everything above — the same `GatewayAuditWriter` instance, the same underlying
+`basis-core` `AuditEvent` schema, and the same "gateway defines no parallel schema" principle.
+
+### 10.1 Three distinct artifacts
+
+Every operation-aware evaluation record involves three distinct, separately-owned artifacts.
+Conflating them is the most common documentation and implementation error this section exists to
+prevent:
+
+```text
+basis_core.audit.AuditEvidence
+    Kernel-produced. Owned by basis-core. Complete, unmodified evaluation evidence —
+    matched_rule_ids, outcome, failure_reason, trace references allowed by the configured
+    evidence tier. basis-gateway never constructs, mutates, reorders, or reinterprets any
+    field of this artifact.
+
+basis_gateway.audit.operation_aware_gateway_events.GatewayAuditEvent
+    Gateway-owned. A small, narrowly-scoped, contract-shaped record — NOT a basis-schemas
+    contract, and not a superset/subset of basis-core's own AuditEvent. Carries
+    evaluation_status/outcome/failure_reason (copied verbatim from the kernel result) plus
+    enforcement_action and a reference field, audit_evidence_id.
+
+The outer, durable basis_core.audit.AuditEvent
+    Gateway-owned persistence envelope, written through GatewayAuditWriter. Its `detail`
+    payload is where the two artifacts above are actually recorded — see 10.2.
+```
+
+### 10.2 Siblings, not nesting
+
+**The complete `AuditEvidence` is never embedded inside the `GatewayAuditEvent` contract.** The
+two artifacts are recorded as **siblings**, side by side, inside the outer durable record's
+`detail` payload:
+
+```json
+{
+  "gateway_audit_event": {
+    "event_type": "gateway_authorization",
+    "request_id": "c9d8e7f6-...",
+    "evaluation_status": "completed",
+    "outcome": "allow",
+    "failure_reason": null,
+    "audit_evidence_id": "b1e2f3a4-...",
+    "enforcement_action": "allow"
+  },
+  "audit_evidence": {
+    "evidence_id": "b1e2f3a4-...",
+    "...": "complete, serialized kernel AuditEvidence — every field basis-core produced"
+  }
+}
+```
+
+A gateway audit record never carries an `audit_evidence_id` reference without the corresponding
+`audit_evidence` artifact durably present in that same record — there is no dangling reference,
+and no second lookup is required to reconstruct a decision from one record.
+
+### 10.3 The linkage invariant
+
+```text
+gateway_audit_event.audit_evidence_id  ==  audit_evidence.evidence_id
+```
+
+This equality holds for every completed operation-aware evaluation record. It is what makes the
+two sibling artifacts one coherent record rather than two unrelated ones.
+
+### 10.4 Ownership
+
+```text
+basis-core     owns the authorization decision and the kernel-produced AuditEvidence —
+               matched rules, outcome, failure reason, trace content, evidence identifiers.
+basis-gateway  owns enforcement-boundary facts (HTTP status actually selected, request path,
+               operation-producer trust classification, field-level provenance) and the
+               durable persistence envelope (the outer AuditEvent and its detail payload).
+```
+
+### 10.5 Semantic distinctions preserved in audit evidence
+
+| State | What the audit record shows |
+|---|---|
+| Allow | `evaluation_status="completed"`, `outcome="allow"`, `enforcement_action="allow"`, kernel `AuditEvidence` present |
+| Explicit deny | `evaluation_status="completed"`, `outcome="deny"`, `enforcement_action="deny"`, kernel `AuditEvidence` present |
+| Default deny | Same shape as explicit deny — the *reason* (no rule matched vs. a deny rule matched) is visible in the embedded `AuditEvidence`'s matched-rule evidence, not in a distinct top-level field |
+| `NOT_APPLICABLE` | `evaluation_status="completed"`, `outcome="not_applicable"` — **never rewritten to `"deny"`** — `enforcement_action="deny"` (the gateway's enforcement action collapses with deny; the kernel outcome does not) |
+| Failed evaluation | `evaluation_status="failed"`, `outcome=null`, `failure_reason` set to one of six governed values, kernel `AuditEvidence` present (the kernel still produces evidence for a governed failure) |
+| Missing kernel evidence | The enforcement point's own catastrophic-internal-error fallback — no `GatewayAuditEvent`/`audit_evidence_id` is fabricated; a dedicated `gateway.operation_aware_evidence_missing` system event is written instead, carrying no kernel evidence at all |
+| Pre-kernel rejection | Authentication failure, shape-validation failure, producer-context rejection, composition failure, evaluator unavailable — a gateway-level `SYSTEM_EVENT` is recorded; the kernel was never invoked, so **no `AuditEvidence` exists for these records at all** |
+| Writer failure | The write itself failed (see [`docs/audit-failure-escalation.md`](audit-failure-escalation.md)) — the already-computed decision is unaffected; a failed write is logged and counted, never retried into a fabricated success |
+
+Required invariants, restated explicitly:
+
+- **Gateway denial does not rewrite the kernel outcome.** The gateway's own HTTP/enforcement
+  classification (`deny` for both `deny` and `not_applicable`) is a separate, gateway-owned fact
+  from `response.outcome`, which is always preserved verbatim.
+- **Failed evaluations retain a null outcome.** `GatewayAuditEvent.__post_init__` enforces this at
+  construction time: `evaluation_status="failed"` requires `outcome=None`, and vice versa for
+  `"completed"`.
+- **Missing kernel evidence does not result in fabricated evidence.** When
+  `OperationAwareEnforcementResult.audit_evidence is None`, no `GatewayAuditEvent` is constructed
+  and no `audit_evidence_id` is invented.
+- **Pre-kernel failures contain no kernel evidence.** A rejection that never reaches
+  `OperationAwareEnforcementPoint.evaluate()` produces a system event with no `AuditEvidence`
+  field at all — not an empty or null placeholder standing in for one.
+- **The startup semantic preflight does not create an operational audit event.** The synthetic
+  preflight request's own result (response, evidence, disposition) is logged with an explicit
+  preflight marker and is never written to the operational audit stream — see
+  [`docs/readiness.md`](readiness.md).
+
+### 10.6 Sensitive-data boundaries
+
+`basis-gateway` deliberately does not persist any of the following, on either evaluation path:
+
+- Raw Bearer tokens or `Authorization` header values
+- Cookies
+- Complete JWT claim sets beyond the normalized `subject_id`
+- Credentials or client secrets
+- Private or public keys
+- Full request bodies
+- Complete policy bundles or policy files
+- Raw protocol payloads
+- Stack traces or internal exception text
+- Process environment contents
+
+This is tested behavior (see `tests/test_operation_aware_gateway_conformance.py` and
+`tests/test_operation_aware_audit_events.py`), not a claimed formal data-loss-prevention
+guarantee — the boundary above describes what this repository's audit code paths do not do, not a
+certified redaction pipeline.
