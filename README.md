@@ -595,8 +595,8 @@ tests/          — see pytest output for current count; no live IdP required
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
 - [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–9 implemented; PR 10, this documentation pass, current; PR 11 demonstration pending)
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
-- [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
+- [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) — the stable public API this gateway calls into
 
 ---
 

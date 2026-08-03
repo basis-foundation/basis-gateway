@@ -882,11 +882,11 @@ This planning PR is complete because:
 - [`docs/release-readiness.md`](../release-readiness.md) — v0.1 scope and known limitations this plan does not alter
 - [`docs/audit-model.md`](../audit-model.md) — the v0.1 audit model this plan's gateway-audit-event work extends
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](basis-gateway-v0.1-plan.md) — the precedent this plan follows for structure and rigor
-- [`basis-architecture/ROADMAP.md`](../../../basis-architecture/ROADMAP.md) — "Downstream Rollout Sequence" and "The Next Gateway Boundary"
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../../../basis-architecture/docs/architecture/basis-gateway.md) — the architectural role and invariants this plan preserves
-- [`basis-architecture/docs/architecture/operation-aware-authorization-model.md`](../../../basis-architecture/docs/architecture/operation-aware-authorization-model.md) — the conceptual model this plan implements against
-- [`basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md`](../../../basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md) — outcome/failure semantics referenced throughout §9–§11
-- [`basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md`](../../../basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md) — the evidence model §10 implements against
-- [`basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md`](../../../basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md) — why `basis_core.evaluation` must not be imported directly (§8)
-- [`basis-architecture/docs/security/threat-model.md`](../../../basis-architecture/docs/security/threat-model.md) — the threat analysis §14 is grounded in
-- [`basis-core/docs/public-api.md`](../../../basis-core/docs/public-api.md) at tag `v0.2.0` — the authoritative symbol inventory §8 cites
+- [`basis-architecture/ROADMAP.md`](https://github.com/basis-foundation/basis-architecture/blob/main/ROADMAP.md) — "Downstream Rollout Sequence" and "The Next Gateway Boundary"
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — the architectural role and invariants this plan preserves
+- [`basis-architecture/docs/architecture/operation-aware-authorization-model.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-authorization-model.md) — the conceptual model this plan implements against
+- [`basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-evaluation-semantics.md) — outcome/failure semantics referenced throughout §9–§11
+- [`basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-trace-audit-evidence.md) — the evidence model §10 implements against
+- [`basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-evaluation-orchestration.md) — why `basis_core.evaluation` must not be imported directly (§8)
+- [`basis-architecture/docs/security/threat-model.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/security/threat-model.md) — the threat analysis §14 is grounded in
+- [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) at tag `v0.2.0` — the authoritative symbol inventory §8 cites

@@ -39,7 +39,7 @@ Appropriate reports include:
 - Callers are untrusted: all identity is derived from verified JWT claims, never from request body fields
 - The gateway fails closed: unexpected errors produce DENY, not ALLOW
 
-These assumptions are documented in detail in [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md).
+These assumptions are documented in detail in [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md).
 
 ## Known Limitations
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -548,39 +549,263 @@ def test_endpoint_doc_uses_placeholder_token_not_literal_bearer_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Markdown link validation (internal, relative links only)
+# Markdown link validation
 # ---------------------------------------------------------------------------
-
+# GitHub Actions checks out only this repository — sibling BASIS repositories
+# (basis-core, basis-architecture, ...) do not exist in that runner, even
+# though they may be mounted side by side in a local development sandbox.
+# A link classifier that resolves *any* relative path against the local
+# filesystem therefore gives a false pass in a sandbox that happens to have
+# every sibling repo checked out, and a false failure in CI, where it does
+# not. The classifier below fixes that by treating link *type* as the
+# deciding factor, not where the test happens to run:
+#
+#   relative path (no scheme)  -> must resolve to a real file in THIS repo
+#   https://github.com/...     -> validated structurally only, no network call
+#   fragment-only (#...)       -> not a filesystem path; not checked
+#   any other scheme           -> not a filesystem path; not checked
+#
+# This performs no network access, no git operations, and requires no
+# sibling checkout, branch, or "origin/main" reference of any kind.
+# ---------------------------------------------------------------------------
 
 _LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
+_ALLOWED_EXTERNAL_SCHEMES = frozenset({"http", "https"})
+_CANONICAL_GITHUB_ORG = "basis-foundation"
+_KNOWN_BASIS_REPOS = frozenset(
+    {
+        "basis-core",
+        "basis-architecture",
+        "basis-schemas",
+        "basis-console",
+        "basis-identity",
+        "basis-adapters",
+        "basis-gateway",
+    }
+)
 
-def _internal_relative_links(markdown: str) -> list[str]:
-    links = []
-    for target in _LINK_RE.findall(markdown):
-        if target.startswith(("http://", "https://", "#")):
-            continue
-        links.append(target.split("#", 1)[0])
-    return [link for link in links if link]
+
+def _link_targets(markdown: str) -> list[str]:
+    return [target for target in _LINK_RE.findall(markdown) if target]
+
+
+def _classify_link(target: str) -> str:
+    """Classify a single Markdown link target.
+
+    Returns one of ``"fragment"`` (a same-page anchor, e.g. ``#section``),
+    ``"external"`` (``http``/``https`` scheme — never filesystem-checked),
+    ``"other-scheme"`` (e.g. ``mailto:`` — never filesystem-checked), or
+    ``"relative"`` (no scheme — must resolve to a real file in this repo).
+    """
+    if target.startswith("#"):
+        return "fragment"
+    parsed = urlparse(target)
+    if parsed.scheme in _ALLOWED_EXTERNAL_SCHEMES:
+        return "external"
+    if parsed.scheme:
+        return "other-scheme"
+    return "relative"
+
+
+def _is_valid_canonical_github_link(url: str) -> bool:
+    """Structural-only validation of a cross-repository GitHub link.
+
+    Never makes a network request. Checks scheme, host, organization, that
+    the repository segment is a known BASIS repository, and — for links
+    pointing at a specific file or directory rather than the repository
+    root — that the ref segment is ``blob/main`` or ``tree/main``.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    if parsed.hostname != "github.com":
+        return False
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 2:
+        return False
+    org, repo = segments[0], segments[1]
+    if org != _CANONICAL_GITHUB_ORG:
+        return False
+    if repo not in _KNOWN_BASIS_REPOS:
+        return False
+    if len(segments) > 2 and segments[2] not in ("blob", "tree"):
+        return False
+    return not (len(segments) > 3 and segments[3] != "main")
+
+
+def _resolve_relative_link(doc_path: Path, target: str) -> Path:
+    """Resolve a same-repository relative link (fragment already stripped by
+    the caller) against the Markdown file that contains it."""
+    return (doc_path.parent / target).resolve()
 
 
 @pytest.mark.parametrize("doc_path", _CHANGED_MARKDOWN_FILES, ids=lambda p: p.name)
 def test_internal_markdown_links_resolve(doc_path: Path) -> None:
+    """Same-repository relative links must resolve to a real file in this
+    checkout; canonical cross-repository GitHub links are validated
+    structurally only (see module-level comment above)."""
     text = _read(doc_path)
-    base_dir = doc_path.parent
-    broken = []
-    for link in _internal_relative_links(text):
-        resolved = (base_dir / link).resolve()
-        # Links that climb outside the basis-gateway checkout (e.g. sibling
-        # repos like ../basis-architecture) are not verifiable from this
-        # repository alone and are skipped.
-        try:
-            resolved.relative_to(REPO_ROOT.parent)
-        except ValueError:
+    broken_relative = []
+    invalid_external = []
+    for target in _link_targets(text):
+        kind = _classify_link(target)
+        if kind in ("fragment", "other-scheme"):
             continue
+        if kind == "external":
+            if "github.com" in target and not _is_valid_canonical_github_link(target):
+                invalid_external.append(target)
+            continue
+        # kind == "relative"
+        path_only = target.split("#", 1)[0]
+        if not path_only:
+            continue
+        resolved = _resolve_relative_link(doc_path, path_only)
         if not resolved.exists():
-            broken.append(link)
-    assert not broken, f"{doc_path}: broken internal link(s): {broken}"
+            broken_relative.append(target)
+    assert not broken_relative, f"{doc_path}: broken same-repository link(s): {broken_relative}"
+    assert not invalid_external, (
+        f"{doc_path}: malformed cross-repository link(s): {invalid_external}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Link-classifier regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_relative_link_classified_as_relative() -> None:
+    assert _classify_link("docs/configuration.md") == "relative"
+    assert _classify_link("../audit-model.md") == "relative"
+
+
+def test_valid_same_repository_relative_link_resolves(tmp_path: Path) -> None:
+    doc = tmp_path / "docs" / "guide.md"
+    doc.parent.mkdir(parents=True)
+    target = tmp_path / "docs" / "other.md"
+    target.write_text("content", encoding="utf-8")
+    doc.write_text("[link](other.md)", encoding="utf-8")
+    resolved = _resolve_relative_link(doc, "other.md")
+    assert resolved.exists()
+
+
+def test_broken_same_repository_relative_link_fails(tmp_path: Path) -> None:
+    doc = tmp_path / "docs" / "guide.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("[link](does-not-exist.md)", encoding="utf-8")
+    resolved = _resolve_relative_link(doc, "does-not-exist.md")
+    assert not resolved.exists()
+
+
+def test_relative_link_with_fragment_resolves_after_fragment_stripped(tmp_path: Path) -> None:
+    doc = tmp_path / "docs" / "guide.md"
+    doc.parent.mkdir(parents=True)
+    target = tmp_path / "README.md"
+    target.write_text("content", encoding="utf-8")
+    link_target = "../README.md#current-limitations"
+    path_only = link_target.split("#", 1)[0]
+    resolved = _resolve_relative_link(doc, path_only)
+    assert resolved.exists()
+
+
+def test_fragment_only_link_is_not_treated_as_a_filesystem_path() -> None:
+    assert _classify_link("#current-limitations") == "fragment"
+
+
+def test_canonical_github_link_is_classified_external_not_relative() -> None:
+    url = "https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md"
+    assert _classify_link(url) == "external"
+
+
+def test_canonical_github_link_structural_validation_accepts_known_repo() -> None:
+    assert _is_valid_canonical_github_link(
+        "https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/basis-foundation/basis-core/blob/main/README.md",  # wrong host
+        "https://github.com/some-other-org/basis-core/blob/main/README.md",  # wrong org
+        "https://github.com/basis-foundation/not-a-basis-repo/blob/main/README.md",  # unknown repo
+        "https://github.com/basis-foundation/basis-core/branch/main/README.md",  # wrong ref keyword
+    ],
+)
+def test_canonical_github_link_structural_validation_rejects_malformed(url: str) -> None:
+    assert not _is_valid_canonical_github_link(url)
+
+
+def test_external_link_handling_performs_no_network_request() -> None:
+    """The link classifier and structural validator operate on strings only
+    — proven here by calling them with an unreachable-looking host and
+    confirming no exception/timeout occurs, which would only be possible if
+    a real connection were attempted."""
+    unreachable = "https://this-host-does-not-exist.invalid.example/basis-foundation/basis-core"
+    assert _classify_link(unreachable) == "external"
+    assert _is_valid_canonical_github_link(unreachable) is False
+
+
+def test_documentation_test_module_makes_no_network_or_process_calls() -> None:
+    """Guards against a regression reintroducing network/subprocess/git
+    dependencies into link validation.
+
+    The forbidden tokens are assembled from parts so this test's own literal
+    list of things-to-forbid does not trip its own assertion.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    forbidden_tokens = [
+        "requests" + "." + "get",
+        "httpx" + "." + "get",
+        "urllib" + "." + "request",
+        "sub" + "process",
+        "git" + " clone",
+        "actions" + "/checkout",
+    ]
+    lines = source.splitlines()
+    this_function_start = next(
+        i
+        for i, line in enumerate(lines)
+        if "def test_documentation_test_module_makes_no_network_or_process_calls" in line
+    )
+    # Exclude this function's own body (which necessarily mentions the
+    # forbidden tokens in order to check for them) from the scan.
+    source_excluding_self = "\n".join(lines[:this_function_start])
+    for forbidden in forbidden_tokens:
+        assert forbidden not in source_excluding_self, (
+            f"documentation tests must stay offline; found {forbidden!r}"
+        )
+
+
+def test_readme_has_no_sibling_filesystem_links_to_basis_repos() -> None:
+    text = _read(README_MD)
+    assert not re.search(
+        r"\]\(\.\./+basis-(core|architecture|schemas|console|identity|adapters)", text
+    )
+
+
+def test_integration_plan_has_no_sibling_filesystem_links_to_basis_repos() -> None:
+    text = _read(INTEGRATION_PLAN_MD)
+    assert not re.search(
+        r"\]\(\.\./+basis-(core|architecture|schemas|console|identity|adapters)", text
+    )
+
+
+def test_known_canonical_cross_repo_links_use_https_github_urls() -> None:
+    readme = _read(README_MD)
+    plan = _read(INTEGRATION_PLAN_MD)
+    assert "https://github.com/basis-foundation/basis-architecture/blob/main/" in readme
+    assert "https://github.com/basis-foundation/basis-core/blob/main/" in readme
+    assert "https://github.com/basis-foundation/basis-architecture/blob/main/" in plan
+    assert "https://github.com/basis-foundation/basis-core/blob/main/" in plan
+
+
+def test_intentional_local_dev_sibling_instructions_are_preserved() -> None:
+    """The follow-up correction targets Markdown *hyperlinks* only. Plain-
+    prose sibling-checkout instructions (e.g. 'pip install -e ../basis-core')
+    describe an intentional local development layout and must remain."""
+    text = _read(README_MD)
+    assert "pip install -e ../basis-core" in text
 
 
 # ---------------------------------------------------------------------------

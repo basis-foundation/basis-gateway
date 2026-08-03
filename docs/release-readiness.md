@@ -97,4 +97,4 @@ The following are not included in v0.1 and will not be added without a deliberat
 - [`docs/audit-model.md`](audit-model.md) — audit architecture, event inventory, correlation flow
 - [`docs/audit-failure-escalation.md`](audit-failure-escalation.md) — escalation model design, Model B/C trade-offs, recovery behavior
 - [`docs/troubleshooting.md`](troubleshooting.md) — startup failures, readiness diagnostics, recovery procedures
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, and invariants
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, and invariants
