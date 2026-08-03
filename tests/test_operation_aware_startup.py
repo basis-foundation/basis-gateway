@@ -7,12 +7,18 @@ configuration presence validation, and ``main.py``'s lifespan wiring —
 disabled-by-default behavior, enabled/valid startup, enabled/invalid startup
 failure, and isolation from existing v0.1 startup state.
 
-PR 5 deliberately does not build PR 8's full four-component readiness model
-(``operation_aware_bundle_loaded``/``operation_aware_evaluator_initialized``/
-``operation_aware_policy_semantically_valid``/``operation_aware_mode_enabled``)
-— these tests check the single, narrow ``operation_aware_evaluator``
-component this PR actually registers, and startup success/failure via
-``app.state.operation_aware_evaluator`` and ``/ready``.
+PR 8 replaced PR 5's original narrow, temporary ``operation_aware_evaluator``
+readiness component with the full four-component staged model
+(``operation_aware_mode_enabled``/``operation_aware_bundle_loaded``/
+``operation_aware_evaluator_initialized``/``operation_aware_policy_semantically_valid``)
+described in §13 — see ``tests/test_operation_aware_readiness.py`` for the
+focused, per-stage readiness coverage (failure attribution, pending-state
+visibility, disabled-mode absence, etc.). This module retains its original
+scope: configuration presence validation and the coarser
+``app.state.operation_aware_evaluator``/``/ready`` status-code assertions
+below still hold unchanged under the new model, so they are kept here as
+regression coverage — only the one assertion that named the removed
+single-component readiness name was updated to check the new model instead.
 """
 
 from __future__ import annotations
@@ -210,6 +216,9 @@ def test_enabled_valid_bundle_loads_and_preflights(monkeypatch, tmp_path) -> Non
 
 
 def test_enabled_valid_bundle_registers_ready_component(monkeypatch, tmp_path) -> None:
+    """PR 8: all four staged operation-aware components are ready, and the
+    removed temporary single component is gone. See
+    tests/test_operation_aware_readiness.py for the full per-stage matrix."""
     path = write_bundle(tmp_path, VALID_BUNDLE)
     monkeypatch.setenv("OPERATION_AWARE_ENABLED", "true")
     monkeypatch.setenv("OPERATION_AWARE_POLICY_BUNDLE_PATH", path)
@@ -217,7 +226,11 @@ def test_enabled_valid_bundle_registers_ready_component(monkeypatch, tmp_path) -
     app = create_app()
     with TestClient(app):
         components = get_readiness_state().components
-        assert components.get("operation_aware_evaluator") is True
+        assert components.get("operation_aware_mode_enabled") is True
+        assert components.get("operation_aware_bundle_loaded") is True
+        assert components.get("operation_aware_evaluator_initialized") is True
+        assert components.get("operation_aware_policy_semantically_valid") is True
+        assert "operation_aware_evaluator" not in components
 
 
 def test_enabled_valid_v01_evaluator_state_remains_unchanged(monkeypatch, tmp_path) -> None:

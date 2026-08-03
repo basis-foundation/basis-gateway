@@ -19,9 +19,19 @@ Part of the operation-aware gateway integration
   real public enforcement path — never ``validate_policy_bundle`` or any
   other internal ``basis_core.evaluation.*``/``basis_core.policy.operation_aware.validation``
   symbol.
+- ``construct_operation_aware_evaluator`` builds the wrapper around a real
+  ``OperationAwareEnforcementPoint`` from an already-loaded bundle —
+  construction only, no preflight. A separate, independently-callable stage
+  boundary (PR 8, §13) so a caller (``main.py``'s lifespan) can mark the
+  ``operation_aware_evaluator_initialized`` readiness component ready
+  immediately after construction succeeds, distinct from
+  ``operation_aware_policy_semantically_valid`` (marked only once
+  ``preflight_operation_aware_evaluator`` separately succeeds).
 - ``build_operation_aware_evaluator``/``load_and_build_operation_aware_evaluator``
   compose loading, construction, and preflight into the one sequence that
-  must complete before a usable evaluator is ever returned.
+  must complete before a usable evaluator is ever returned — retained for
+  callers (including this repository's own test suite) that want the
+  combined, fully-preflighted result in one call.
 
 This module does not register an HTTP route, does not emit operational
 audit events, and does not classify a kernel result into an HTTP status —
@@ -118,6 +128,7 @@ __all__ = [
     "OperationAwareRequestConstructionError",
     "build_operation_aware_decision_request",
     "build_operation_aware_evaluator",
+    "construct_operation_aware_evaluator",
     "load_and_build_operation_aware_evaluator",
     "preflight_operation_aware_evaluator",
 ]
@@ -487,6 +498,53 @@ def preflight_operation_aware_evaluator(
 # ---------------------------------------------------------------------------
 
 
+def construct_operation_aware_evaluator(
+    bundle: PolicyBundle,
+    *,
+    trace_id_factory: Callable[[], str] = _default_trace_id,
+    evidence_id_factory: Callable[[], str] = _default_evidence_id,
+    clock: Callable[[], datetime] = _default_clock,
+) -> OperationAwareGatewayEvaluator:
+    """Construct the real enforcement point and wrap it — construction only,
+    *no* semantic preflight (PR 8, §13's ``operation_aware_evaluator_initialized``
+    stage boundary).
+
+    The real ``OperationAwareEnforcementPoint.for_bundle(bundle)`` factory
+    called here (see this module's docstring, "Import boundary (§8)") does
+    not itself run semantic validation — that happens the first time the
+    enforcement point actually evaluates a request, which is exactly what
+    ``preflight_operation_aware_evaluator`` does, separately, against the
+    returned evaluator. The evaluator this function returns has **not** yet
+    passed the startup semantic preflight; callers that need a
+    fully-preflighted evaluator in one call should use
+    ``build_operation_aware_evaluator`` instead, which composes this
+    function with ``preflight_operation_aware_evaluator`` unchanged.
+
+    Args:
+        bundle: an already-loaded, structurally-valid public
+            ``PolicyBundle`` (see ``load_operation_aware_policy_bundle``).
+        trace_id_factory: forwarded to the constructed evaluator; called
+            once per real ``evaluate()`` call. Default generates a fresh
+            UUIDv4 string.
+        evidence_id_factory: forwarded to the constructed evaluator; called
+            once per real ``evaluate()`` call. Default generates a fresh
+            UUIDv4 string.
+        clock: forwarded to the constructed evaluator; called once per real
+            ``evaluate()`` call. Default returns ``datetime.now(timezone.utc)``.
+
+    Returns:
+        An ``OperationAwareGatewayEvaluator`` wrapping a freshly-constructed
+        ``OperationAwareEnforcementPoint`` — preflight not yet run.
+    """
+    enforcement_point = OperationAwareEnforcementPoint.for_bundle(bundle)
+    return OperationAwareGatewayEvaluator(
+        _enforcement_point=enforcement_point,
+        _trace_id_factory=trace_id_factory,
+        _evidence_id_factory=evidence_id_factory,
+        _clock=clock,
+    )
+
+
 def build_operation_aware_evaluator(
     bundle: PolicyBundle,
     *,
@@ -497,6 +555,12 @@ def build_operation_aware_evaluator(
     """Construct the real enforcement point, wrap it, and run the semantic
     preflight — in that order. A usable evaluator is never returned before
     preflight succeeds.
+
+    Composes ``construct_operation_aware_evaluator`` and
+    ``preflight_operation_aware_evaluator`` unchanged (PR 8, §13) — kept as
+    a single convenience call for callers (including this repository's own
+    test suite) that want the fully-preflighted result in one step, without
+    caring about the intermediate construction-only stage boundary.
 
     Args:
         bundle: an already-loaded, structurally-valid public
@@ -516,12 +580,11 @@ def build_operation_aware_evaluator(
         OperationAwarePreflightError: the startup semantic preflight
             failed — see ``preflight_operation_aware_evaluator``.
     """
-    enforcement_point = OperationAwareEnforcementPoint.for_bundle(bundle)
-    evaluator = OperationAwareGatewayEvaluator(
-        _enforcement_point=enforcement_point,
-        _trace_id_factory=trace_id_factory,
-        _evidence_id_factory=evidence_id_factory,
-        _clock=clock,
+    evaluator = construct_operation_aware_evaluator(
+        bundle,
+        trace_id_factory=trace_id_factory,
+        evidence_id_factory=evidence_id_factory,
+        clock=clock,
     )
     preflight_operation_aware_evaluator(evaluator)
     return evaluator

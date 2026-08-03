@@ -22,14 +22,37 @@ Lifespan:
        endpoint's own audit recording (routes.py) needs it at
        request time regardless of which later component ends
        up ready.
+  1c. Register operation-aware readiness (PR 8, §13), when
+      OPERATION_AWARE_ENABLED=true.               → marks
+      "operation_aware_mode_enabled" ready; registers
+      "operation_aware_bundle_loaded",
+      "operation_aware_evaluator_initialized",
+      "operation_aware_policy_semantically_valid" not-ready/pending.
+       Placed here — immediately after the step 1b writer and
+       *before* every step below that can itself fail — for the
+       same reason as 1a/1b: a later failure in evaluation-config
+       validation (step 2), auth initialization (step 3), v0.1
+       policy loading (step 4), or operation-aware bundle
+       processing itself (step 6) must never leave
+       "operation_aware_mode_enabled" unregistered, and must never
+       leave the other three components' pending state invisible.
   2. Validate evaluation config (fail-early).
   3. Initialize the auth_mode-selected verifier:
        - "oidc" (default): OIDC verifier             → marks "oidc_configured", "jwks_available"
        - "basis_local_token": BASIS-local trust config → marks "basis_local_token_configured"
   4. Load policy from POLICY_PATH.                         → marks "policy_loaded"
   5. Initialize GatewayEvaluator (reuses the step 1b writer). → marks "evaluator_initialized"
-  6. Operation-aware evaluator construction (PR 5, additive, feature-flagged).
-       Only runs when OPERATION_AWARE_ENABLED=true          → marks "operation_aware_evaluator"
+  6. Operation-aware bundle processing (PR 5, additive, feature-flagged),
+     staged readiness (PR 8, §13) — the fallible half of what step 1c
+     registered. Only runs when OPERATION_AWARE_ENABLED=true:
+       6a. Structural policy-bundle loading (config presence check +
+           ``load_operation_aware_policy_bundle``).  → marks
+           "operation_aware_bundle_loaded"
+       6b. Evaluator construction (``construct_operation_aware_evaluator``).
+             → marks "operation_aware_evaluator_initialized"
+       6c. Startup semantic preflight
+           (``preflight_operation_aware_evaluator``).  → marks
+           "operation_aware_policy_semantically_valid"
 
 Startup fails predictably when evaluation is enabled and required dependencies
 are unavailable. The service still starts (so /health responds), but /ready
@@ -37,15 +60,16 @@ returns 503 until all components are ready.
 
 Only the components for the configured auth_mode are registered: in "oidc"
 mode, "basis_local_token_configured" is never registered (and vice versa),
-so the inactive mode's readiness never blocks the active one. Likewise,
-"operation_aware_evaluator" is only registered when OPERATION_AWARE_ENABLED
-is true — a deployment that does not enable the feature sees no readiness
-behavior change at all. Step 6's single readiness component is a narrow,
-temporary integration for this PR only; PR 8 replaces it with the full
-four-component readiness model described in the integration plan's §13
-(``operation_aware_bundle_loaded``, ``operation_aware_evaluator_initialized``,
-``operation_aware_policy_semantically_valid``, plus the informational
-``operation_aware_mode_enabled``).
+so the inactive mode's readiness never blocks the active one. Likewise, the
+four operation-aware components above are only registered when
+OPERATION_AWARE_ENABLED is true — a deployment that does not enable the
+feature sees no readiness behavior change at all. A startup failure is
+attributed to the stage that actually failed: later stages are left
+not-ready (with an honest "not yet reached"/pending reason) rather than
+falsely reported as failed by execution they never reached, and
+"operation_aware_mode_enabled" itself is informational only — it never
+implies bundle, evaluator, or semantic readiness (see §13 of the
+integration plan and ``readiness.py``).
 
 app.state holds:
   config                          — GatewayConfig
@@ -98,12 +122,15 @@ from basis_gateway.config import (
 from basis_gateway.core.evaluator import build_evaluator
 from basis_gateway.core.operation_aware_evaluator import (
     OperationAwarePreflightError,
-    OperationAwareRequestConstructionError,
-    load_and_build_operation_aware_evaluator,
+    construct_operation_aware_evaluator,
+    preflight_operation_aware_evaluator,
 )
 from basis_gateway.middleware.correlation import CorrelationMiddleware
 from basis_gateway.policy.loader import PolicyLoadError, load_policy_engine
-from basis_gateway.policy.operation_aware_loader import OperationAwarePolicyLoadError
+from basis_gateway.policy.operation_aware_loader import (
+    OperationAwarePolicyLoadError,
+    load_operation_aware_policy_bundle,
+)
 from basis_gateway.readiness import get_readiness_state
 
 log = logging.getLogger(__name__)
@@ -185,6 +212,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 config.audit_failure_threshold,
                 config.audit_fail_closed,
             )
+
+        # ── 1c. Operation-aware readiness registration (PR 8, §13) ──────────
+        # Registers the full four-component operation-aware readiness
+        # picture — and marks the mode itself ready — immediately after
+        # configuration loads, exactly like step 1a/1b above and for the
+        # same reason: so a later failure in *any* subsequent step
+        # (evaluation-config validation, authentication initialization, v0.1
+        # policy loading, or operation-aware bundle processing itself in
+        # step 6 below) can never leave "operation_aware_mode_enabled"
+        # unregistered or leave the other three components' pending state
+        # invisible. Selecting the flag is not itself a failure, so the mode
+        # component is marked ready here directly; the other three start
+        # not-ready with an honest "not yet reached" reason and are only
+        # ever updated by step 6's actual fallible work — never fabricated
+        # as failed by a step (e.g. authentication) they were never reached
+        # by. Disabled (OPERATION_AWARE_ENABLED unset or "false"): none of
+        # the four components are registered at all.
+        if config.operation_aware_enabled:
+            state.mark_not_ready(
+                reason="Operation-aware policy bundle not yet loaded "
+                "(operation-aware startup pending)",
+                component="operation_aware_bundle_loaded",
+            )
+            state.mark_not_ready(
+                reason="Operation-aware evaluator not yet constructed "
+                "(operation-aware startup pending)",
+                component="operation_aware_evaluator_initialized",
+            )
+            state.mark_not_ready(
+                reason="Operation-aware startup semantic preflight not yet run "
+                "(operation-aware startup pending)",
+                component="operation_aware_policy_semantically_valid",
+            )
+            state.mark_ready("operation_aware_mode_enabled")
+            log.info("Operation-aware mode enabled")
 
         # ── 2. Fail-early validation ─────────────────────────────────────────
         # Raises EvaluationConfigError when evaluation is enabled but required
@@ -308,50 +370,103 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             state.mark_ready("evaluator_initialized")
             log.info("Evaluator initialized policy_version=%s", config.policy_version)
 
-        # ── 6. Operation-aware integration (PR 5, additive) ───────────────
-        # Disabled by default (OPERATION_AWARE_ENABLED unset or "false"):
-        # no bundle load, no evaluator construction, no semantic preflight,
-        # and no readiness component is registered — existing v0.1 startup
-        # behavior above is completely unaffected. This is a separate
+        # ── 6. Operation-aware integration (PR 5, additive; staged readiness ──
+        # per PR 8, §13). The four-component readiness picture was already
+        # registered at step 1c above (mode ready, the other three pending)
+        # so it survives a step 2/3/4/5 failure that would otherwise prevent
+        # this block from ever running. Disabled by default
+        # (OPERATION_AWARE_ENABLED unset or "false"): step 1c registered
+        # nothing, and this block does not run at all — no bundle load, no
+        # evaluator construction, no semantic preflight. This is a separate
         # feature flag, separate configuration, separate loader, and
-        # separate evaluator instance from the v0.1 path; it never
-        # replaces or mutates app.state.evaluator/app.state.policy_engine.
+        # separate evaluator instance from the v0.1 path; it never replaces
+        # or mutates app.state.evaluator/app.state.policy_engine.
         if config.operation_aware_enabled:
+            # ── 6a. Structural policy-bundle loading ───────────────────────
+            # Config-presence validation and file/JSON/structural loading are
+            # both attributed to "operation_aware_bundle_loaded" — a missing
+            # OPERATION_AWARE_POLICY_BUNDLE_PATH is a bundle-loading failure
+            # from an operator's perspective (§13), not a distinct stage of
+            # its own.
             try:
                 validate_operation_aware_config(config)
             except OperationAwareConfigError as exc:
                 log.error(
                     "Operation-aware configuration validation failed "
-                    "[operation_aware_evaluator]: %s — check "
+                    "[operation_aware_bundle_loaded]: %s — check "
                     "OPERATION_AWARE_POLICY_BUNDLE_PATH",
                     exc,
                 )
-                state.mark_not_ready(reason=str(exc), component="operation_aware_evaluator")
+                state.mark_not_ready(reason=str(exc), component="operation_aware_bundle_loaded")
                 raise
 
             bundle_path = config.operation_aware_policy_bundle_path
             assert bundle_path is not None  # guaranteed by validate_operation_aware_config
             log.info("Loading operation-aware policy bundle from %s", bundle_path)
             try:
-                operation_aware_evaluator = load_and_build_operation_aware_evaluator(bundle_path)
-            except (
-                OperationAwarePolicyLoadError,
-                OperationAwareRequestConstructionError,
-                OperationAwarePreflightError,
-            ) as exc:
+                operation_aware_bundle = load_operation_aware_policy_bundle(bundle_path)
+            except OperationAwarePolicyLoadError as exc:
                 log.error(
-                    "Operation-aware evaluator initialization failed "
-                    "[operation_aware_evaluator, %s]: %s — check "
-                    "OPERATION_AWARE_POLICY_BUNDLE_PATH and the bundle's structural/semantic "
-                    "validity",
-                    type(exc).__name__,
+                    "Operation-aware policy bundle loading failed "
+                    "[operation_aware_bundle_loaded, %s]: %s — check "
+                    "OPERATION_AWARE_POLICY_BUNDLE_PATH and the bundle's structural validity",
+                    exc.stage.value,
                     exc,
                 )
-                state.mark_not_ready(reason=str(exc), component="operation_aware_evaluator")
+                state.mark_not_ready(reason=str(exc), component="operation_aware_bundle_loaded")
                 raise
+            state.mark_ready("operation_aware_bundle_loaded")
+            log.info("Operation-aware policy bundle loaded bundle_path=%s", bundle_path)
+
+            # ── 6b. Evaluator construction ──────────────────────────────────
+            # Distinct from both bundle loading above and the semantic
+            # preflight below: a loaded bundle does not imply a constructed
+            # evaluator, and a constructed evaluator does not imply the
+            # bundle is semantically usable. With a bundle that has already
+            # passed structural loading, ``OperationAwareEnforcementPoint
+            # .for_bundle()`` is not known to fail — this broad except exists
+            # for honest stage attribution of an unexpected failure here,
+            # never to paper over a realistic policy-authoring mistake (those
+            # surface at the semantic-preflight stage below instead).
+            try:
+                operation_aware_evaluator = construct_operation_aware_evaluator(
+                    operation_aware_bundle
+                )
+            except Exception as exc:
+                log.error(
+                    "Operation-aware evaluator construction failed "
+                    "[operation_aware_evaluator_initialized]: %s",
+                    exc,
+                )
+                state.mark_not_ready(
+                    reason=str(exc), component="operation_aware_evaluator_initialized"
+                )
+                raise
+            state.mark_ready("operation_aware_evaluator_initialized")
+            log.info("Operation-aware evaluator constructed bundle_path=%s", bundle_path)
+
+            # ── 6c. Startup semantic preflight ──────────────────────────────
+            # A structurally valid, constructible bundle can still be
+            # semantically broken (duplicate rule IDs, unsupported condition
+            # operators, ...) — this is the check that closes that gap. Never
+            # writes to the operational audit stream (see
+            # preflight_operation_aware_evaluator's own docstring).
+            try:
+                preflight_operation_aware_evaluator(operation_aware_evaluator)
+            except OperationAwarePreflightError as exc:
+                log.error(
+                    "Operation-aware startup semantic preflight failed "
+                    "[operation_aware_policy_semantically_valid]: %s — check the bundle's "
+                    "rule conditions and operators for semantic validity",
+                    exc,
+                )
+                state.mark_not_ready(
+                    reason=str(exc), component="operation_aware_policy_semantically_valid"
+                )
+                raise
+            state.mark_ready("operation_aware_policy_semantically_valid")
 
             app.state.operation_aware_evaluator = operation_aware_evaluator
-            state.mark_ready("operation_aware_evaluator")
             log.info(
                 "Operation-aware evaluator initialized and passed startup semantic preflight "
                 "bundle_path=%s",
