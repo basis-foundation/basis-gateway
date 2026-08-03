@@ -23,6 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Action composition boundary** (`basis_gateway.core.actions`): `POST /v1/evaluate` now accepts adapter-normalized requests (bare verb `action` plus `resource_type`, e.g. `action="read"`, `resource_type="ahu"`) and composes them into the kernel-compatible composite action (`read:ahu`) before evaluation. Direct composite requests (`action="read:ahu"`) are unchanged and pass through.
 - `resource_type` field on `EvaluateRequest` (optional for composite actions, required for bare verbs).
 - Composition evidence recorded under the reserved `basis_gateway.*` context namespace (`action_composed`, `original_action`, `resource_type`, `composed_action`) whenever the gateway composes an action.
+- **Bounded, offline operation-aware gateway demonstration** (`demo/operation-aware/`): a reproducible, non-destructive walkthrough of the real gateway-to-kernel path (signed BASIS-local token → real authentication → producer-trust classification → composition → the real public `basis-core` kernel → HTTP enforcement → audit evidence → readiness) covering allow, explicit deny, default deny, `not_applicable`, untrusted-producer rejection, and a semantic-startup-failure scenario. Requires no network access, live identity provider, Docker, or external secrets — see [`demo/operation-aware/README.md`](demo/operation-aware/README.md).
 
 ### Changed
 

@@ -1,0 +1,34 @@
+{
+  "allow": {
+    "http_status": 200,
+    "evaluation_status": "completed",
+    "outcome": "allow",
+    "disposition": "allow"
+  },
+  "explicit-deny": {
+    "http_status": 403,
+    "evaluation_status": "completed",
+    "outcome": "deny",
+    "disposition": "deny"
+  },
+  "default-deny": {
+    "http_status": 403,
+    "evaluation_status": "completed",
+    "outcome": "deny",
+    "disposition": "deny"
+  },
+  "not-applicable": {
+    "http_status": 403,
+    "evaluation_status": "completed",
+    "outcome": "not_applicable",
+    "disposition": "deny"
+  },
+  "untrusted-producer": {
+    "http_status": 400
+  },
+  "semantic-startup-failure": {
+    "health_status": 200,
+    "ready_status": 503,
+    "operation_aware_route_status": 503
+  }
+}

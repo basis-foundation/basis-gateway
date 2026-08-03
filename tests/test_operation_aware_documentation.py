@@ -473,10 +473,17 @@ def test_integration_plan_marks_prs_1_through_9_complete() -> None:
     assert "complete" in text.lower()
 
 
-def test_integration_plan_pr11_still_pending() -> None:
+def test_integration_plan_pr11_implemented() -> None:
+    """PR 11 (the bounded, offline demonstration) is implemented and current
+    as of this PR — updated from PR 10's snapshot, where it was still
+    pending. Historical planning-time language elsewhere in this document
+    that once described PR 11 as pending is expected to remain only where
+    explicitly labeled historical (see test_integration_plan_marks_prs_1_
+    through_9_complete's own docstring precedent)."""
     text = _read(INTEGRATION_PLAN_MD)
-    assert "pending" in text.lower()
     assert "PR 11" in text
+    assert "implemented" in text.lower()
+    assert "demo/operation-aware" in text
 
 
 def test_integration_plan_no_stale_not_implemented_claims() -> None:

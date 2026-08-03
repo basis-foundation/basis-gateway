@@ -1,6 +1,6 @@
 # Operation-Aware Gateway Integration Plan
 
-**Status**: PRs 1–9 implemented and merged. PR 10 (documentation and release hardening) is current. PR 11 (bounded end-to-end demonstration) is pending.
+**Status**: PRs 1–10 implemented and merged. PR 11 (bounded end-to-end demonstration) is implemented and current.
 **Date**: 2026-07-31 (original planning date; see "Implementation Status" below for the current state)
 **Scope**: Architecture and implementation plan for adopting the released `basis-core` operation-aware authorization surface in `basis-gateway`. PRs 1–9 have implemented the runtime behavior this plan describes, behind the `OPERATION_AWARE_ENABLED` feature flag (default `false`). This document retains its original planning-time language throughout, labeled historical where relevant — see the status callout immediately below for what is now actually shipped.
 **Branch**: `docs/operation-aware-gateway-integration-plan` (original); implementation landed across PRs 1–9's own branches; this PR (10) is `docs/operation-aware-release-hardening`.
@@ -16,11 +16,19 @@
 >   See [`docs/operation-aware-endpoint.md`](../operation-aware-endpoint.md) and
 >   [`docs/readiness.md`](../readiness.md) for the current-state reference documentation this
 >   plan's implementation is now described by.
-> - **PR 10 (this documentation and release-hardening pass): current.** Updates README,
->   configuration reference, endpoint documentation, audit documentation, readiness
+> - **PR 10 (documentation and release-hardening pass): complete and merged to `main`.** Updated
+>   README, configuration reference, endpoint documentation, audit documentation, readiness
 >   documentation, changelog, and a release-readiness review to accurately describe the
->   now-implemented surface. Adds no runtime behavior.
-> - **PR 11 (bounded end-to-end demonstration): pending, not yet implemented.**
+>   now-implemented surface. Added no runtime behavior.
+> - **PR 11 (this bounded end-to-end demonstration): implemented, current.** Adds
+>   `demo/operation-aware/` — a bounded, reproducible, offline demonstration of the real
+>   gateway-to-kernel path (signed BASIS-local token -> real authentication -> operation-producer
+>   trust classification -> composition -> the real public `basis-core`
+>   `OperationAwareEnforcementPoint` -> HTTP enforcement classification -> gateway + kernel audit
+>   evidence -> readiness diagnostics), covering allow, explicit deny, default deny,
+>   `not_applicable`, untrusted-producer rejection, and a semantic-startup-failure scenario. See
+>   [`demo/operation-aware/README.md`](../../demo/operation-aware/README.md). Adds no production
+>   runtime behavior — `src/` is unchanged by this PR.
 > - Sections below retain this document's original planning-time language (including forward
 >   references to "future PRs" and design recommendations phrased before implementation). Where
 >   the shipped implementation differs from an early draft's wording — notably §10's
@@ -116,7 +124,7 @@ There is no `GatewayAuditEvent` model in this repository today (that name is a `
 | OIDC / BASIS-local token dual auth mode | **Current, released** — reused unchanged as the identity source for operation-aware requests | **Current, released** — reused unchanged |
 | Operation-aware request ingestion, `OperationAwareEnforcementPoint` integration, `PolicyBundle` loading, operation-aware audit/readiness | **Planned** — this document | **Current, implemented, feature-flagged** (`OPERATION_AWARE_ENABLED`, default `false`) — PRs 3–9 |
 | Operation-aware documentation and release hardening | not yet scoped | **Current** — this PR (10) |
-| Bounded end-to-end operation-aware demonstration | not yet scoped | **Pending** — PR 11 |
+| Bounded end-to-end operation-aware demonstration | not yet scoped | **Implemented** — PR 11 (`demo/operation-aware/`) |
 | Nothing in this repository is deprecated or transitional as a result of this plan | — the operation-aware surface is additive; `/v1/evaluate` has no announced deprecation | Still true — `/v1/evaluate` remains supported with no announced deprecation |
 
 ---
@@ -768,14 +776,15 @@ Each PR is scoped to be reviewable independently and to leave the repository in 
 - **Completion criteria**: documentation accurately reflects shipped behavior; `docs/release-readiness.md` and the new operation-aware release-readiness review together cover the operation-aware counterpart to the v0.1 "what's included" narrative, including the producer-trust posture and the `expected_policy_version` omission.
 
 ### PR 11 — Bounded end-to-end demonstration scenario
-- **Status: pending, not yet implemented.**
+- **Status: implemented, current (this PR).**
 - **Objective**: a documented, reproducible demonstration (not a product feature) showing a classified-operation-producer-shaped normalized operation flowing through authentication, producer-trust classification, composition, kernel evaluation, enforcement, and audit for at least one `ALLOW`, one explicit `DENY`, one default-deny, and one `NOT_APPLICABLE` scenario — plus one rejected scenario showing an unclassified caller's producer-context assertion being refused before the kernel is ever invoked.
-- **Dependencies**: PR 10 (this PR — documentation and release hardening).
-- **Files/areas**: a `docs/` walkthrough and/or an example policy bundle under `policies/`, mirroring the existing `policies/default.json` precedent for the v0.1 path.
-- **Architectural boundaries**: demonstration/documentation scope only; no new runtime code beyond what PRs 1–9 already shipped.
-- **Required tests**: the demonstration scenario should be executable as part of the existing test suite (not just a manual walkthrough), so it does not silently drift from the shipped behavior it documents.
-- **Non-goals**: a permanent demo service, a UI, or console integration.
-- **Completion criteria**: a new contributor or downstream integrator can follow the demonstration and reproduce all five outcome categories (four kernel outcomes plus the producer-trust rejection) against the real gateway-to-kernel path.
+- **Delivered**: `demo/operation-aware/` — `run_demo.py` (a single entry point, `python demo/operation-aware/run_demo.py`, with an optional `--scenario`/`--json` selector, standard-library `argparse` only), two policy bundles (`policy-bundles/operation-aware-demo-bundle.json` valid, `policy-bundles/operation-aware-invalid-bundle.json` structurally valid but semantically invalid), a stable expectations file (`expected/scenario-summary.json`), and a `README.md` explaining purpose, requirements, scenarios, architecture, evidence model, safety, limitations, and the `basis-console` relationship. Six scenarios, one more than originally scoped here: `allow`, `explicit-deny`, `default-deny`, `not-applicable`, `untrusted-producer`, and `semantic-startup-failure` (demonstrating the startup semantic preflight's failure mode from `docs/readiness.md`, not only the five originally listed).
+- **Dependencies**: PR 10 (documentation and release hardening). ✅ Satisfied — confirmed against merged `main` at the start of this PR (1178 passed).
+- **Files/areas**: `demo/operation-aware/` (new, self-contained — not under `src/` or `policies/`), `tests/test_operation_aware_demo.py` (new), narrow doc updates to `README.md`, `docs/operation-aware-endpoint.md`, `docs/readiness.md`, `CHANGELOG.md`, and `docs/release-readiness/operation-aware-gateway-readiness-review.md`. No `src/` changes.
+- **Architectural boundaries**: demonstration/documentation scope only; no new runtime code beyond what PRs 1–9 already shipped. The demonstration drives the real `basis_gateway.main.create_app()` through its real ASGI lifespan and the real `POST /v1/evaluate/operation-aware` route — it does not call route functions directly, does not bypass authentication, and does not mock the kernel result.
+- **Required tests**: `tests/test_operation_aware_demo.py` — the demonstration scenario is executable as part of the existing test suite (not just a manual walkthrough), so it cannot silently drift from the shipped behavior it documents.
+- **Non-goals**: a permanent demo service, a UI, or console integration — none added.
+- **Completion criteria**: a new contributor or downstream integrator can follow the demonstration and reproduce all six scenarios against the real gateway-to-kernel path. Met — see this PR's completion report.
 
 ---
 

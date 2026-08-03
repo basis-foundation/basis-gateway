@@ -243,7 +243,8 @@ ran:
 ## Example requests and responses
 
 All identifiers below are synthetic. `$TOKEN` is a placeholder for a real Bearer token — never a
-literal secret.
+literal secret. For a runnable, bounded, offline demonstration of these exact scenarios against
+the real gateway-to-kernel path, see [`demo/operation-aware/`](../demo/operation-aware/README.md).
 
 ### Allow
 
@@ -436,8 +437,6 @@ a trusted producer, per [Producer-only context](#producer-only-context) above).
 
 ## Limitations
 
-- No PR 11 bounded end-to-end demonstration environment yet — the examples above are illustrative
-  request/response shapes, not a runnable demo.
 - No policy authoring tooling for the `PolicyBundle` format — bundles are hand-authored JSON.
 - `invalid_request`, `unsupported_schema_version`, and `internal_evaluation_error` are governed,
   documented failure reasons, but are not reachable through the real gateway-to-kernel path with a
@@ -453,3 +452,4 @@ a trusted producer, per [Producer-only context](#producer-only-context) above).
 - [`docs/audit-model.md`](audit-model.md) — audit evidence model, sibling-artifact structure
 - [`docs/readiness.md`](readiness.md) — readiness components and failure matrix
 - [`docs/implementation/operation-aware-gateway-integration-plan.md`](implementation/operation-aware-gateway-integration-plan.md) — full architecture and design rationale
+- [`demo/operation-aware/README.md`](../demo/operation-aware/README.md) — bounded, reproducible, offline demonstration

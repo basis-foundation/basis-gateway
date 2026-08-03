@@ -52,9 +52,13 @@ is a roadmap item.
   (`tests/test_operation_aware_public_api_contract.py`, and route-level import assertions in
   `tests/test_operation_aware_endpoint.py`).
 
+**Implemented since this review's original PR 10 scope, folded in below:**
+
+- PR 11's bounded, reproducible, offline end-to-end demonstration (`demo/operation-aware/`) —
+  see §11.
+
 **Not implemented — explicitly out of scope for this review, tracked separately:**
 
-- PR 11's bounded, reproducible end-to-end demonstration (pending).
 - Any capability listed in this repository's [README — Current limitations](../../README.md#current-limitations)
   (policy hot reload, durable audit storage, audit query API, cryptographic audit signing,
   tamper-evident audit chain, adapter execution confirmation, device-state verification,
@@ -188,25 +192,80 @@ Additionally, from this review specifically:
 
 | Item | Classification |
 |---|---|
-| PR 11 bounded demonstration not yet implemented | **future** — explicitly scoped to a later PR by this plan; not required for PR 10's own completion |
+| PR 11 bounded demonstration | **resolved** — implemented in `demo/operation-aware/`; see §11 |
 | `pyproject.toml` version left at `0.1.0` despite the operation-aware feature set | **non-blocking** — see Finding F1; a version bump is a separate, authorized release-preparation action, not a PR 10 documentation task |
 | Missing `license`/`classifiers`/`authors` metadata in `pyproject.toml` | **non-blocking** — pre-existing gap, not introduced by or specific to this rollout |
 | Three governed failure reasons not reachable through the real kernel path in this test suite | **non-blocking** — a structural property of the current bundle/request surface, not a test gap; already covered at the pure-function classification level |
 | Operation-aware `basis-console` UI integration (Training mode, Operator mode) | **future** — ecosystem work scoped to the `basis-console` repository, not this repository; not required for PR 10 or PR 11 |
 
-No **blocking** items were found for PR 10's own scope (documentation and release hardening).
+No **blocking** items were found for PR 10's own scope (documentation and release hardening), and
+none were found for PR 11's demonstration work either (see §11).
 
 ---
 
 ## 10. Recommendation
 
-**Ready for PR 11 demonstration.**
+**Operation-aware gateway rollout complete and ready for a separate versioning/release-preparation
+decision.**
 
-PRs 1–9 are implemented, tested (1087 passed, including 549 operation-aware tests), and
-documented as of this PR. Lint, formatting, and type checking are clean. Compatibility with the
-existing `/v1/evaluate` path is verified. No release-blocking issues were found. The two
-non-blocking packaging findings (F1, F2) should be tracked but do not block PR 11's bounded
-demonstration work.
+PRs 1–11 are implemented, tested, and documented. Lint, formatting, and type checking are clean.
+Compatibility with the existing `/v1/evaluate` path is verified. The bounded, offline
+demonstration (PR 11) reproduces all six governed scenarios against the real gateway-to-kernel
+path with a deterministic, non-zero-on-mismatch exit contract. No release-blocking issues were
+found. The two non-blocking packaging findings (F1, F2) remain tracked as separate follow-up work
+— see §6 and the Findings below.
+
+---
+
+## 11. PR 11 — Bounded demonstration validation
+
+**Reviewed at**: PR 11 (`demo/operation-aware/`), branch `demo/operation-aware-gateway`, starting
+commit `f6d48c8` (merged PR 10).
+
+- **Scope**: `demo/operation-aware/run_demo.py`, `demo/operation-aware/policy-bundles/*.json`,
+  `demo/operation-aware/expected/scenario-summary.json`, `demo/operation-aware/README.md`,
+  `tests/test_operation_aware_demo.py`.
+- **Real-path claim, verified**: every primary scenario is driven through
+  `basis_gateway.main.create_app()`'s real ASGI lifespan and the real
+  `POST /v1/evaluate/operation-aware` route via `fastapi.testclient.TestClient` — no route
+  function is called directly, no middleware or authentication step is bypassed, and
+  `basis-core` is never called directly for the demo's primary output.
+- **Authentication**: real `AUTH_MODE=basis_local_token` path; an ephemeral, in-memory RSA key
+  pair signs demonstration-only BASIS-local identity tokens submitted through the real
+  `Authorization: Bearer ...` header and verified by the real
+  `basis_gateway.auth.runtime.authenticate` dispatch. No live OIDC provider, no JWKS fetch, no
+  network call.
+- **Audit capture**: a narrow, demonstration-only capturing sink is injected under the real
+  `GatewayAuditWriter`'s innermost delegate after startup — the same pattern this repository's
+  own tests already use (`tests/test_operation_aware_endpoint_audit.py`'s `_CapturingWriter`).
+  `GatewayAuditWriter`'s own failure-tracking/readiness behavior is untouched; gateway audit
+  assembly and HTTP classification are never patched.
+- **Scenario coverage**: `allow`, `explicit-deny`, `default-deny`, `not-applicable`,
+  `untrusted-producer`, `semantic-startup-failure` — one more than this document's original PR
+  11 scope (which named four kernel outcomes plus the producer-trust rejection); the sixth,
+  `semantic-startup-failure`, demonstrates the startup semantic preflight failure mode documented
+  in §13/`docs/readiness.md` using a structurally valid, semantically invalid bundle (duplicate
+  `rule_id`).
+- **Determinism and exit contract**: `demo/operation-aware/expected/scenario-summary.json` holds
+  only stable semantic fields (HTTP status, evaluation status, outcome, disposition) — never
+  dynamic IDs. `run_demo.py` exits `0` only when every scenario matches; a deliberately mutated
+  expectation is asserted (both manually during this review and by
+  `tests/test_operation_aware_demo.py::test_runner_returns_nonzero_when_expectation_mutated`) to
+  produce a non-zero exit with the mismatch printed, never a silently-passing false positive.
+- **Hermeticity**: no `requests`/`boto3`/`docker`/`kubernetes`/`subprocess`/`socket`/
+  `urllib.request` usage; `httpx` is used only via `TestClient`'s in-process ASGI transport, never
+  against an external URL — confirmed by a repository-wide grep during this review's validation
+  run and by `tests/test_operation_aware_demo.py::test_no_disallowed_network_or_process_imports_in_source`.
+- **Sensitive-data guard**: no committed private key, no committed bearer token, no raw JWT or key
+  material in any demo output (text or `--json`) — confirmed by grep and by
+  `tests/test_operation_aware_demo.py`'s dedicated tests.
+- **Import boundary**: no import of `basis_core.evaluation.*` anywhere in `demo/` — only the same
+  public `basis-core`/`basis-gateway` surfaces already approved for production use.
+- **Production impact**: none. No file under `src/` was modified by this PR; no defect in
+  already-promised behavior was found or needed correcting.
+- **Test evidence**: `tests/test_operation_aware_demo.py` — 33 passed. Operation-aware suite
+  (`tests/test_operation_aware_*.py`) — 673 passed. Full suite — 1211 passed (baseline 1178 + 33).
+  See this PR's completion report for full command output.
 
 ---
 
@@ -226,7 +285,9 @@ being present at the repository root. This predates the operation-aware rollout 
 specific to it. **Recommendation**: address in a dedicated packaging-metadata PR, not folded into
 documentation work.
 
-**F3 — Deferred to PR 11 or later.** The bounded, reproducible end-to-end demonstration scenario,
-any demo policy bundle beyond the tiny structural examples in this PR's documentation, and any
-sample deployment tooling remain explicitly out of scope for PR 10, per this PR's own
-"Explicit Non-Goals."
+**F3 — Resolved in PR 11.** The bounded, reproducible end-to-end demonstration scenario and its
+demo policy bundles (beyond the tiny structural examples in PR 10's own documentation) were
+explicitly out of scope for PR 10, per that PR's own "Explicit Non-Goals," and are now delivered
+in PR 11 (`demo/operation-aware/`) — see §11. Sample deployment tooling (Docker, Kubernetes,
+hosted control plane) remains explicitly out of scope for both PRs and is not part of this
+repository's roadmap.
