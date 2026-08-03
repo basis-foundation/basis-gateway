@@ -20,6 +20,26 @@ Only the components for the currently configured auth_mode are ever
 registered, so "oidc_configured"/"jwks_available" never block readiness in
 "basis_local_token" mode, and "basis_local_token_configured" never blocks
 readiness in "oidc" mode.
+
+Operation-aware components (registered only when OPERATION_AWARE_ENABLED=true;
+see ``main.py``'s lifespan step 6 and the integration plan's §13):
+  - "operation_aware_mode_enabled"              — the feature flag itself is
+                                                    enabled; informational,
+                                                    never implies the other
+                                                    three are ready.
+  - "operation_aware_bundle_loaded"              — the operation-aware
+                                                    PolicyBundle was
+                                                    structurally loaded.
+  - "operation_aware_evaluator_initialized"      — the operation-aware
+                                                    evaluator was constructed
+                                                    from that bundle.
+  - "operation_aware_policy_semantically_valid"  — the constructed evaluator
+                                                    passed the startup
+                                                    semantic preflight.
+
+This module itself defines no operation-aware-specific behavior — the
+generic mark_ready/mark_not_ready/components API above is reused unchanged
+by every component, existing or operation-aware.
 """
 
 from __future__ import annotations
