@@ -1,11 +1,33 @@
 # Operation-Aware Gateway Integration Plan
 
-**Status**: Planned
-**Date**: 2026-07-31
-**Scope**: Architecture and implementation plan for adopting the released `basis-core` `v0.2.0` operation-aware authorization surface in `basis-gateway`. Documentation and planning only — no runtime behavior changes in this PR.
-**Branch**: `docs/operation-aware-gateway-integration-plan`
+**Status**: PRs 1–9 implemented and merged. PR 10 (documentation and release hardening) is current. PR 11 (bounded end-to-end demonstration) is pending.
+**Date**: 2026-07-31 (original planning date; see "Implementation Status" below for the current state)
+**Scope**: Architecture and implementation plan for adopting the released `basis-core` operation-aware authorization surface in `basis-gateway`. PRs 1–9 have implemented the runtime behavior this plan describes, behind the `OPERATION_AWARE_ENABLED` feature flag (default `false`). This document retains its original planning-time language throughout, labeled historical where relevant — see the status callout immediately below for what is now actually shipped.
+**Branch**: `docs/operation-aware-gateway-integration-plan` (original); implementation landed across PRs 1–9's own branches; this PR (10) is `docs/operation-aware-release-hardening`.
 
-This document is the authoritative implementation plan for the next phase of `basis-gateway`: controlled adoption of the operation-aware kernel surface released in `basis-core` `v0.2.0`. It does not implement operation-aware runtime behavior, does not modify the current `/v1/evaluate` endpoint, and does not change authentication, policy loading, readiness, or audit emission as they exist today.
+> ## Implementation Status (updated for PR 10)
+>
+> - **PRs 1–9: complete and merged to `main`.** The operation-aware gateway path described by
+>   this plan is implemented: the feature-gated `POST /v1/evaluate/operation-aware` endpoint,
+>   operation-producer trust classification, provenance-gated composition, public `basis-core`
+>   v0.2.1 kernel integration (`OperationAwareEnforcementPoint.for_bundle()`), the startup
+>   semantic preflight, exact HTTP status classification, gateway+kernel audit evidence, the
+>   four operation-aware readiness components, and the canonical/adversarial conformance suite.
+>   See [`docs/operation-aware-endpoint.md`](../operation-aware-endpoint.md) and
+>   [`docs/readiness.md`](../readiness.md) for the current-state reference documentation this
+>   plan's implementation is now described by.
+> - **PR 10 (this documentation and release-hardening pass): current.** Updates README,
+>   configuration reference, endpoint documentation, audit documentation, readiness
+>   documentation, changelog, and a release-readiness review to accurately describe the
+>   now-implemented surface. Adds no runtime behavior.
+> - **PR 11 (bounded end-to-end demonstration): pending, not yet implemented.**
+> - Sections below retain this document's original planning-time language (including forward
+>   references to "future PRs" and design recommendations phrased before implementation). Where
+>   the shipped implementation differs from an early draft's wording — notably §10's
+>   evidence-composition description — a note is added inline rather than silently rewriting the
+>   historical rationale.
+
+This document is the authoritative implementation plan for the operation-aware phase of `basis-gateway`: controlled adoption of the operation-aware kernel surface released in `basis-core`. Sections 1–18 below are retained in their original planning-time form as the historical design record; the callout above is the authoritative statement of current implementation state.
 
 ---
 
@@ -83,13 +105,19 @@ There is no `GatewayAuditEvent` model in this repository today (that name is a `
 
 ### 2.10 Current vs. planned vs. transitional
 
-| Behavior | Status |
-|---|---|
-| `/v1/evaluate`, `EvaluateRequest`/`EvaluateResponse`, v0.1 `EnforcementPoint` integration | **Current, released** — unaffected by this plan |
-| Action/resource composition boundary (`core/actions.py`, `core/resources.py`) | **Current, released** — reused, not replaced, for operation-aware composition |
-| OIDC / BASIS-local token dual auth mode | **Current, released** — reused unchanged as the identity source for operation-aware requests |
-| Operation-aware request ingestion, `OperationAwareEnforcementPoint` integration, `PolicyBundle` loading, operation-aware audit/readiness | **Planned** — this document |
-| Nothing in this repository is deprecated or transitional as a result of this plan | — the operation-aware surface is additive; `/v1/evaluate` has no announced deprecation |
+> **Updated for PR 10** — this table described the state at planning time (before PRs 2–9
+> implemented this plan). It is retained for historical context; see the "Implementation Status"
+> callout at the top of this document for the current state.
+
+| Behavior | Status at planning time | Status as of PR 10 |
+|---|---|---|
+| `/v1/evaluate`, `EvaluateRequest`/`EvaluateResponse`, v0.1 `EnforcementPoint` integration | **Current, released** — unaffected by this plan | **Current, released** — still unaffected |
+| Action/resource composition boundary (`core/actions.py`, `core/resources.py`) | **Current, released** — reused, not replaced, for operation-aware composition | **Current, released** — reused unchanged by the now-implemented operation-aware path |
+| OIDC / BASIS-local token dual auth mode | **Current, released** — reused unchanged as the identity source for operation-aware requests | **Current, released** — reused unchanged |
+| Operation-aware request ingestion, `OperationAwareEnforcementPoint` integration, `PolicyBundle` loading, operation-aware audit/readiness | **Planned** — this document | **Current, implemented, feature-flagged** (`OPERATION_AWARE_ENABLED`, default `false`) — PRs 3–9 |
+| Operation-aware documentation and release hardening | not yet scoped | **Current** — this PR (10) |
+| Bounded end-to-end operation-aware demonstration | not yet scoped | **Pending** — PR 11 |
+| Nothing in this repository is deprecated or transitional as a result of this plan | — the operation-aware surface is additive; `/v1/evaluate` has no announced deprecation | Still true — `/v1/evaluate` remains supported with no announced deprecation |
 
 ---
 
@@ -462,7 +490,18 @@ No new kernel reason codes are invented by this plan. `enforcement_reason` value
 
 **Recommended initial strategy:**
 
-> **Embed the complete, bounded, redaction-governed `AuditEvidence` artifact inside the gateway's own operation-aware `GatewayAuditEvent`.**
+> **Embed the complete, bounded, redaction-governed `AuditEvidence` artifact alongside the gateway's own operation-aware `GatewayAuditEvent`, in the same durable record.**
+
+> **Implementation note (PR 10 correction):** the shipped implementation
+> (`basis_gateway.audit.operation_aware_gateway_events`) places `gateway_audit_event` and
+> `audit_evidence` as **sibling keys** inside the outer durable `AuditEvent.detail` payload — the
+> complete `AuditEvidence` is never nested *inside* the `GatewayAuditEvent` contract itself.
+> `GatewayAuditEvent` instead carries a reference field, `audit_evidence_id`, and the invariant
+> `gateway_audit_event.audit_evidence_id == audit_evidence.evidence_id` links the two sibling
+> artifacts within one record. This satisfies the same "never write a dangling reference" rule
+> this section establishes — the referenced artifact is always present in the same record — while
+> keeping the two artifacts' ownership visibly distinct. See
+> [`docs/audit-model.md`](../audit-model.md) §10 for the authoritative current-state description.
 
 This is the recommended first implementation because:
 
@@ -719,17 +758,19 @@ Each PR is scoped to be reviewable independently and to leave the repository in 
 - **Completion criteria**: §17's four categories (compatibility, composition, kernel semantics, evidence agreement, security) each have passing coverage, including the producer-trust, semantic-preflight, evidence-embedding, and outcome-classification test additions from this correction pass.
 
 ### PR 10 — Documentation and compatibility hardening
+- **Status: current (this PR).**
 - **Objective**: update `docs/audit-model.md`, `docs/release-readiness.md`, `README.md`, and `CHANGELOG.md` to accurately describe the now-implemented operation-aware surface, following this repository's existing documentation conventions (accurate-to-implementation, not aspirational, per `docs/release-checklist.md` §1).
-- **Dependencies**: PRs 1–9 complete.
-- **Files/areas**: the docs listed above; no `src/` changes.
+- **Dependencies**: PRs 1–9 complete. ✅ Satisfied — confirmed against merged `main` at the start of this PR (1087 passed).
+- **Files/areas**: the docs listed above, plus new `docs/configuration.md`, `docs/operation-aware-endpoint.md`, `docs/readiness.md`, `docs/release-readiness/operation-aware-gateway-readiness-review.md`, and a new `tests/test_operation_aware_documentation.py`; no other `src/` changes.
 - **Architectural boundaries**: documentation only.
-- **Required tests**: link/reference validation if the repository has tooling for it (none identified today — see §Validation in the final report).
+- **Required tests**: documentation/example-validation tests added in `tests/test_operation_aware_documentation.py` (environment-variable inventory, JSON example validation, readiness-name checks, audit sibling-artifact wording, required limitation statements).
 - **Non-goals**: new features.
-- **Completion criteria**: documentation accurately reflects shipped behavior; `docs/release-readiness.md`'s "what v0.1 includes"-style section gains an operation-aware counterpart, including the producer-trust posture and the `expected_policy_version` omission.
+- **Completion criteria**: documentation accurately reflects shipped behavior; `docs/release-readiness.md` and the new operation-aware release-readiness review together cover the operation-aware counterpart to the v0.1 "what's included" narrative, including the producer-trust posture and the `expected_policy_version` omission.
 
 ### PR 11 — Bounded end-to-end demonstration scenario
+- **Status: pending, not yet implemented.**
 - **Objective**: a documented, reproducible demonstration (not a product feature) showing a classified-operation-producer-shaped normalized operation flowing through authentication, producer-trust classification, composition, kernel evaluation, enforcement, and audit for at least one `ALLOW`, one explicit `DENY`, one default-deny, and one `NOT_APPLICABLE` scenario — plus one rejected scenario showing an unclassified caller's producer-context assertion being refused before the kernel is ever invoked.
-- **Dependencies**: PR 10.
+- **Dependencies**: PR 10 (this PR — documentation and release hardening).
 - **Files/areas**: a `docs/` walkthrough and/or an example policy bundle under `policies/`, mirroring the existing `policies/default.json` precedent for the v0.1 path.
 - **Architectural boundaries**: demonstration/documentation scope only; no new runtime code beyond what PRs 1–9 already shipped.
 - **Required tests**: the demonstration scenario should be executable as part of the existing test suite (not just a manual walkthrough), so it does not silently drift from the shipped behavior it documents.
@@ -841,11 +882,11 @@ This planning PR is complete because:
 - [`docs/release-readiness.md`](../release-readiness.md) — v0.1 scope and known limitations this plan does not alter
 - [`docs/audit-model.md`](../audit-model.md) — the v0.1 audit model this plan's gateway-audit-event work extends
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](basis-gateway-v0.1-plan.md) — the precedent this plan follows for structure and rigor
-- [`basis-architecture/ROADMAP.md`](../../../basis-architecture/ROADMAP.md) — "Downstream Rollout Sequence" and "The Next Gateway Boundary"
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../../../basis-architecture/docs/architecture/basis-gateway.md) — the architectural role and invariants this plan preserves
-- [`basis-architecture/docs/architecture/operation-aware-authorization-model.md`](../../../basis-architecture/docs/architecture/operation-aware-authorization-model.md) — the conceptual model this plan implements against
-- [`basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md`](../../../basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md) — outcome/failure semantics referenced throughout §9–§11
-- [`basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md`](../../../basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md) — the evidence model §10 implements against
-- [`basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md`](../../../basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md) — why `basis_core.evaluation` must not be imported directly (§8)
-- [`basis-architecture/docs/security/threat-model.md`](../../../basis-architecture/docs/security/threat-model.md) — the threat analysis §14 is grounded in
-- [`basis-core/docs/public-api.md`](../../../basis-core/docs/public-api.md) at tag `v0.2.0` — the authoritative symbol inventory §8 cites
+- [`basis-architecture/ROADMAP.md`](https://github.com/basis-foundation/basis-architecture/blob/main/ROADMAP.md) — "Downstream Rollout Sequence" and "The Next Gateway Boundary"
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — the architectural role and invariants this plan preserves
+- [`basis-architecture/docs/architecture/operation-aware-authorization-model.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-authorization-model.md) — the conceptual model this plan implements against
+- [`basis-architecture/docs/architecture/operation-aware-evaluation-semantics.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-evaluation-semantics.md) — outcome/failure semantics referenced throughout §9–§11
+- [`basis-architecture/docs/architecture/operation-aware-trace-audit-evidence.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-trace-audit-evidence.md) — the evidence model §10 implements against
+- [`basis-architecture/docs/architecture/operation-aware-evaluation-orchestration.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/operation-aware-evaluation-orchestration.md) — why `basis_core.evaluation` must not be imported directly (§8)
+- [`basis-architecture/docs/security/threat-model.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/security/threat-model.md) — the threat analysis §14 is grounded in
+- [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) at tag `v0.2.0` — the authoritative symbol inventory §8 cites

@@ -2,6 +2,11 @@
 
 This document covers common operator and developer failure scenarios, how to diagnose them, and what to do next.
 
+> For the feature-gated `POST /v1/evaluate/operation-aware` path — the four operation-aware
+> readiness components, the startup failure matrix, and operation-aware-specific symptoms
+> (route `404`/`503`, producer-context rejection, semantic preflight failure) — see
+> [`docs/readiness.md`](readiness.md).
+
 ---
 
 ## How to inspect `/ready`

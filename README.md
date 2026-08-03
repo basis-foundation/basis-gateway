@@ -1,28 +1,102 @@
 # basis-gateway
 
-`basis-gateway` is the authentication, identity normalization, and HTTP enforcement boundary for the BASIS ecosystem. It sits between external callers and `basis-core`. It does not evaluate policy — it delegates every authorization decision to `basis-core` via the stable public API and enforces the result at the HTTP boundary.
+`basis-gateway` is the authenticated HTTP enforcement boundary for BASIS. It authenticates callers, normalizes identity, classifies trusted operation producers, composes governed operations and resources, invokes `basis-core`, enforces the returned disposition, records gateway and kernel evidence, and exposes health/readiness. It sits between external callers and `basis-core`.
+
+**`basis-gateway` is not the policy engine.** It does not evaluate policy, define authorization semantics, or decide what is allowed — it delegates every authorization decision to `basis-core` via the stable public API and enforces the result at the HTTP boundary.
 
 This repository contains the reference implementation of basis-gateway.
 
-The project is released as v0.1.0 and is intended for evaluation, experimentation, and community feedback. Production adoption should be preceded by environment-specific validation and security review.
+The v0.1 evaluation path (`POST /v1/evaluate`) is released as v0.1.0 and is intended for evaluation, experimentation, and community feedback. The operation-aware evaluation path (`POST /v1/evaluate/operation-aware`) is implemented and feature-flagged, disabled by default (see [Endpoints](#endpoints) below). Production adoption of either path should be preceded by environment-specific validation and security review.
 
 ---
 
 ## What's implemented
 
-- **Runtime auth-mode selection** — `AUTH_MODE=oidc` (default) or `AUTH_MODE=basis_local_token` selects which verifier authenticates `/v1/evaluate` Bearer tokens; explicit configuration only, no fallback between modes; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time)
+- **Runtime auth-mode selection** — `AUTH_MODE=oidc` (default) or `AUTH_MODE=basis_local_token` selects which verifier authenticates Bearer tokens on both evaluation endpoints; explicit configuration only, no fallback between modes; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time)
 - **OIDC/JWT authentication** — Bearer token verification (RS256/RS384/RS512/ES256/ES384/ES512); `alg=none` rejected; JWKS cached with configurable TTL; OIDC discovery or explicit JWKS URI override
-- **BASIS-local token trust verifier** — verifies signed BASIS-local identity tokens issued by `basis-identity` (signature, issuer, audience, algorithm, timing, required identity claims); establishes identity trust only; wired into `/v1/evaluate` request authentication when `AUTH_MODE=basis_local_token`; does not import `basis-identity` or `basis-core`; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md)
+- **BASIS-local token trust verifier** — verifies signed BASIS-local identity tokens issued by `basis-identity` (signature, issuer, audience, algorithm, timing, required identity claims); establishes identity trust only; wired into request authentication when `AUTH_MODE=basis_local_token`; does not import `basis-identity` or `basis-core`; see [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md)
 - **Identity normalization** — verified JWT claims mapped to `NormalizedSubject` and `IdentityContext`; subject identity never accepted from the request body
 - **Policy loading** — JSON policy file loaded at startup; service will not become ready if missing or invalid
 - **Authorization evaluation** — `POST /v1/evaluate` delegates to `basis-core` `EnforcementPoint`; gateway enforces the returned decision at the HTTP boundary
-- **Audit evidence** — gateway-level `AuditEvent` records emitted for every outcome, including pre-evaluation failures; all events carry the same `correlation_id` as the response header
+- **Operation-aware evaluation (feature-flagged, disabled by default)** — `POST /v1/evaluate/operation-aware` delegates to `basis-core`'s public `OperationAwareEnforcementPoint`; adds trusted operation-producer classification, richer operational context (location, device, protocol/safety/environment/risk context, identity/adapter evidence references), a startup semantic preflight, and exact evaluation-status/outcome/failure-reason-to-HTTP classification. See [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md)
+- **Audit evidence** — gateway-level `AuditEvent` records are emitted for every outcome on both endpoints, including pre-evaluation failures. For completed operation-aware evaluations, the durable outer record stores the contract-shaped `GatewayAuditEvent` and the complete kernel-produced `AuditEvidence` as sibling artifacts, linked by `audit_evidence_id`. All events carry the same `correlation_id` as the response header.
 - **Correlation IDs** — UUIDv4 generated per request by middleware; included in every response header and all audit records; caller-supplied `X-Correlation-ID` headers are ignored
-- **Per-component readiness** — `/ready` reports `configuration_loaded`, `oidc_configured`, `jwks_available`, `policy_loaded`, `audit_writer`, `evaluator_initialized`
-- **Audit failure escalation** — configurable degradation threshold; optional strict fail-closed mode blocks evaluation when the audit pipeline is unhealthy
+- **Per-component readiness** — `/ready` reports `configuration_loaded`, `oidc_configured`, `jwks_available`, `policy_loaded`, `audit_writer`, `evaluator_initialized`, and (when `OPERATION_AWARE_ENABLED=true`) `operation_aware_mode_enabled`, `operation_aware_bundle_loaded`, `operation_aware_evaluator_initialized`, `operation_aware_policy_semantically_valid`. See [`docs/readiness.md`](docs/readiness.md)
+- **Audit failure escalation** — configurable degradation threshold; optional strict fail-closed mode blocks evaluation on both endpoints when the audit pipeline is unhealthy
 - **Fail-closed on every error path** — unexpected errors deny rather than permit
 
 Tests run without a live IdP. See `tests/` for the current test count.
+
+---
+
+## Endpoints
+
+| Endpoint | Status | Notes |
+|---|---|---|
+| `POST /v1/evaluate` | Current, v0.1 | Always registered. Unaffected by the operation-aware path. |
+| `POST /v1/evaluate/operation-aware` | Current, additive | Registered only when `OPERATION_AWARE_ENABLED=true` (default: `false`). See [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md). |
+
+- `/v1/evaluate` is the existing v0.1 path and requires no configuration change to keep working exactly as it does today.
+- `/v1/evaluate/operation-aware` is additive: it does not replace, share a route with, or change the behavior of `/v1/evaluate`.
+- Operation-aware mode is **disabled by default**. A deployment that does not set `OPERATION_AWARE_ENABLED=true` observes zero behavior change.
+- Enabling operation-aware mode does not disable or deprecate `/v1/evaluate` — both endpoints may be enabled and served at the same time, on the same running instance, sharing the same authentication configuration and audit writer.
+- Route registration for the operation-aware endpoint depends only on `OPERATION_AWARE_ENABLED` at startup; a later startup failure (bad bundle, failed preflight) leaves the route registered but returns a governed `503`, never a `404`.
+
+---
+
+## Conceptual example
+
+Every request, on either endpoint, follows the same shape:
+
+```text
+authenticated subject                (Bearer token verified by AUTH_MODE's verifier)
+        ↓
+action/resource request               (caller/adapter-supplied, e.g. action="read", resource_type="ahu")
+        ↓
+gateway composition                   (bare verb + resource_type → canonical "read:ahu"; on the
+                                        operation-aware path, also: producer-trust classification,
+                                        provenance-gated context composition)
+        ↓
+core decision                         (basis-core EnforcementPoint / OperationAwareEnforcementPoint —
+                                        the sole authority on ALLOW/DENY/NOT_APPLICABLE)
+        ↓
+gateway enforcement                   (HTTP status derived from the kernel result; never guessed)
+        ↓
+evidence                              (gateway + kernel audit records, correlation_id shared throughout)
+```
+
+This is a conceptual walkthrough, not a runnable demo environment — a bounded, reproducible demonstration is tracked separately (see [Roadmap](#roadmap)). See [POST /v1/evaluate](#post-v1evaluate) below for a working `curl` example against the v0.1 path, and [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) for request/response examples on the operation-aware path.
+
+---
+
+## Security boundaries
+
+- **Trusted operation-producer status is configured explicitly** (`OPERATION_PRODUCER_SUBJECT_IDS`) — it is never inferred, self-asserted, or granted implicitly.
+- **Roles do not grant producer trust.** Only exact subject-ID allowlist membership does.
+- **Producer matching is exact and case-sensitive.** No wildcard, prefix, or case-insensitive matching exists.
+- **Untrusted callers cannot assert producer-only context.** A caller not classified as a trusted operation producer that supplies any producer-only field (`operation_intent`, `location`, `device`, `protocol_context`, `safety_context`, `environment_context`, `risk_context`, `identity_evidence_reference`, `adapter_evidence_reference`) is rejected (`400`) before the kernel is ever invoked.
+- **Kernel outcomes are not rewritten by the gateway.** `evaluation_status`, `outcome`, `failure_reason`, and `disposition` are preserved exactly as `basis-core` returns them.
+- **`NOT_APPLICABLE` remains distinct from denial** in the response body and in audit evidence — only the gateway's separately-derived HTTP status collapses `deny`/`not_applicable` to the same code (`403`).
+- **Failed evaluation retains a null outcome.** A `failed` `evaluation_status` never carries a substantive `outcome`, and a `completed` one is never missing one.
+- **Audit write failure does not retroactively change the current decision.** A response already computed is returned to the caller regardless of whether its audit record was successfully written.
+- **Strict audit fail-closed mode (`AUDIT_FAIL_CLOSED=true`) can block later evaluation** when the audit writer remains degraded — it cannot alter a decision already made, only suspend future ones until the audit pipeline recovers.
+
+---
+
+## Current limitations
+
+- No policy hot reload — both the v0.1 role-table policy and the operation-aware `PolicyBundle` are loaded once at startup; changes require a restart.
+- No remote policy distribution — policy and bundle files are loaded from a local filesystem path.
+- No durable, database-backed audit store — audit events are written through `LogAuditWriter` (process log) only.
+- No audit query API.
+- No cryptographic audit signing.
+- No tamper-evident audit chain.
+- No adapter execution confirmation — the gateway proves an authorization decision, an enforcement disposition, and an HTTP result; it does not prove that a physical device executed the operation.
+- No device-state verification.
+- No background policy revalidation — the operation-aware startup semantic preflight runs once, at startup.
+- No built-in multi-tenancy.
+- No hosted-service control plane.
+- No bounded, reproducible operation-aware demonstration yet (tracked as a future PR — see [Roadmap](#roadmap)).
 
 ---
 
@@ -136,35 +210,26 @@ See `.env.example` for the full list of supported variables.
 
 ---
 
-## Environment variables
+## Quick configuration overview
 
-| Variable | Default | Description |
-|---|---|---|
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8000` | Bind port |
-| `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `ENVIRONMENT` | `local` | Deployment environment (`local`, `development`, `staging`, `production`) |
-| `SERVICE_NAME` | `basis-gateway` | Service identifier in health/ready responses |
-| `AUTH_MODE` | `oidc` | Which verifier authenticates `/v1/evaluate` Bearer tokens: `oidc` or `basis_local_token`. Explicit only — never inferred from the token. See [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md#runtime-wiring-choosing-a-verifier-at-request-time). |
-| `OIDC_ISSUER` | _(none)_ | Token issuer URL; required to enable `/v1/evaluate` in `oidc` mode. Used for OIDC discovery and `iss` validation. Not required/validated in `basis_local_token` mode. |
-| `OIDC_AUDIENCE` | _(none)_ | Expected `aud` claim. If unset, audience is not validated. |
-| `OIDC_JWKS_URI` | _(none)_ | Override JWKS endpoint; skips OIDC discovery when set. |
-| `JWKS_CACHE_TTL_SECONDS` | `300` | JWKS in-memory cache TTL in seconds. |
-| `BASIS_LOCAL_TOKEN_ISSUER` | _(none)_ | Expected `iss` claim on BASIS-local tokens; required when `AUTH_MODE=basis_local_token`. Not required/validated in `oidc` mode. |
-| `BASIS_LOCAL_TOKEN_AUDIENCE` | _(none)_ | Expected `aud` claim(s), comma-separated for multiple entries; required when `AUTH_MODE=basis_local_token`. |
-| `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` | _(none)_ | JSON object string mapping key id to PEM public key; required when `AUTH_MODE=basis_local_token`. |
-| `BASIS_LOCAL_TOKEN_ALLOWED_ALGORITHMS` | `RS256` | Comma-separated algorithm allow-list. `none` and any symmetric `HS*` algorithm are always rejected regardless of this setting. |
-| `BASIS_LOCAL_TOKEN_LEEWAY_SECONDS` | `0` | Clock-skew leeway (seconds) applied to BASIS-local token timing validation. |
-| `POLICY_PATH` | _(none)_ | Path to JSON policy file. Required when evaluation is enabled (`OIDC_ISSUER` set in `oidc` mode, or `AUTH_MODE=basis_local_token`). |
-| `POLICY_VERSION` | _(none)_ | Version string included in evaluation responses and audit records. |
-| `AUDIT_FAILURE_THRESHOLD` | `10` | Consecutive audit write failures before `audit_writer` readiness degrades. Must be ≥ 1. See [Audit failure escalation](#audit-failure-escalation). |
-| `AUDIT_FAIL_CLOSED` | `false` | When `true`, a degraded audit writer causes `/v1/evaluate` to return `503`. Default `false` degrades readiness only. |
+The minimum configuration needed for each concern:
+
+| Concern | Minimum variables |
+|---|---|
+| Authentication (`oidc`, default) | `OIDC_ISSUER` (also enables `/v1/evaluate`) |
+| Authentication (`basis_local_token`) | `AUTH_MODE=basis_local_token`, `BASIS_LOCAL_TOKEN_ISSUER`, `BASIS_LOCAL_TOKEN_AUDIENCE`, `BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON` |
+| v0.1 evaluation | `POLICY_PATH` |
+| Operation-aware evaluation | `OPERATION_AWARE_ENABLED=true`, `OPERATION_AWARE_POLICY_BUNDLE_PATH` |
+| Producer trust (operation-aware only) | `OPERATION_PRODUCER_SUBJECT_IDS` (default empty — no caller is ever trusted) |
+| Audit behavior | `AUDIT_FAILURE_THRESHOLD` (default `10`), `AUDIT_FAIL_CLOSED` (default `false`) |
+
+See [`docs/configuration.md`](docs/configuration.md) for the full environment-variable reference (every variable, its default, and its source in `GatewayConfig`), and [`.env.example`](.env.example) for an annotated template.
 
 ---
 
 ## GET /ready
 
-Returns `200` when all required components are initialized. Returns `503` when any required component is not ready. Only the components for the configured `AUTH_MODE` are ever registered: `oidc_configured`/`jwks_available` in `oidc` mode, `basis_local_token_configured` in `basis_local_token` mode — the inactive mode's component is never registered and so never blocks readiness.
+Returns `200` when all required components are initialized. Returns `503` when any required component is not ready. Only the components for the configured `AUTH_MODE` are ever registered: `oidc_configured`/`jwks_available` in `oidc` mode, `basis_local_token_configured` in `basis_local_token` mode — the inactive mode's component is never registered and so never blocks readiness. When `OPERATION_AWARE_ENABLED=true`, four additional components (`operation_aware_mode_enabled`, `operation_aware_bundle_loaded`, `operation_aware_evaluator_initialized`, `operation_aware_policy_semantically_valid`) are also registered and must all be ready. See [`docs/readiness.md`](docs/readiness.md) for the full component reference and failure matrix.
 
 **Ready response (200):**
 ```json
@@ -202,7 +267,7 @@ When a policy is configured, `/ready` also tracks the `audit_writer` component. 
 
 ## Audit failure escalation
 
-`GatewayAuditWriter` tracks consecutive audit write failures. When the count reaches `AUDIT_FAILURE_THRESHOLD` (default: 10), the gateway marks the `audit_writer` readiness component not-ready and `/ready` returns 503. This signals to orchestrators and operators that the audit pipeline requires attention.
+`GatewayAuditWriter` tracks consecutive audit write failures. It is a single, shared instance used by both `/v1/evaluate` and `/v1/evaluate/operation-aware` — there is one failure count and one degraded/recovered state, not two. When the count reaches `AUDIT_FAILURE_THRESHOLD` (default: 10), the gateway marks the `audit_writer` readiness component not-ready and `/ready` returns 503. This signals to orchestrators and operators that the audit pipeline requires attention.
 
 **Recovery** is automatic: the first successful write after degradation resets the consecutive counter and restores readiness. No process restart is required.
 
@@ -376,6 +441,14 @@ and not used as the authoritative correlation ID.
 
 ---
 
+## POST /v1/evaluate/operation-aware
+
+Feature-flagged (`OPERATION_AWARE_ENABLED=true`), additive alternative that delegates to `basis-core`'s public `OperationAwareEnforcementPoint` instead of the v0.1 `EnforcementPoint`. Uses the same Bearer-token authentication as `/v1/evaluate`. Adds trusted operation-producer classification, richer optional operational context, and exact evaluation-status/outcome/failure-reason-to-HTTP classification (`200`/`400`/`403`/`500`/`503`).
+
+See [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) for the full request/response reference, the action/resource grammar, producer-only field list, the semantic outcome matrix, and worked examples (allow, deny, default-deny, not-applicable, failed evaluation, untrusted-producer rejection, evaluator-unavailable).
+
+---
+
 ## Policy file format
 
 The gateway loads a single JSON policy file at startup. The file must contain a `rules` array with at least one rule. Each rule specifies a `role_table` mapping action strings to permitted role names.
@@ -415,10 +488,17 @@ The following are not implemented and will not be added without a deliberate sco
 - Docker, docker-compose, Kubernetes manifests
 - GitHub Actions or CI configuration
 - Protocol adapters
-- `basis-console` integration
 - Metrics and distributed tracing
 - Distributed policy synchronization
 - OPA, Cedar, or other external policy engines
+
+Operation-aware `basis-console` UI integration is not implemented in this repository. It is
+planned as follow-on work in the `basis-console` repository, where Training mode and Operator
+mode will consume the gateway APIs without changing gateway authorization semantics.
+`basis-console` owns the user experience; `basis-gateway` remains the truth-producing
+authorization and enforcement boundary. Neither console mode creates an alternate authorization
+path: Training mode must not bypass authentication or authorization, and Operator mode must not
+redefine kernel outcomes.
 
 ---
 
@@ -500,25 +580,31 @@ tests/          — see pytest output for current count; no live IdP required
 
 ## Related documents
 
+- [`docs/configuration.md`](docs/configuration.md) — full environment-variable reference, sourced from `GatewayConfig`
+- [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) — operation-aware endpoint reference: request/response shape, action/resource grammar, producer trust, outcome matrix, examples
+- [`docs/readiness.md`](docs/readiness.md) — `/health` and `/ready`, all readiness components, the operation-aware failure matrix, operator troubleshooting
 - [`docs/release-readiness.md`](docs/release-readiness.md) — v0.1 scope, known limitations, out-of-scope items, architecture invariants confirmed
+- [`docs/release-readiness/operation-aware-gateway-readiness-review.md`](docs/release-readiness/operation-aware-gateway-readiness-review.md) — operation-aware gateway release-readiness review
 - [`docs/release-candidate-assessment.md`](docs/release-candidate-assessment.md) — v0.1 release candidate assessment and verdict
 - [`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) — v0.1.0 release notes
 - [`docs/release-checklist.md`](docs/release-checklist.md) — release checklist for v0.1 and future releases
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
-- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, known limitations
+- [`docs/audit-model.md`](docs/audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior, known limitations, operation-aware sibling-artifact model
 - [`docs/audit-failure-escalation.md`](docs/audit-failure-escalation.md) — audit failure escalation architecture, failure scenarios, security analysis, and Model B/C trade-offs
 - [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md) — BASIS-local token trust contract, verifier behavior, and relationship to OIDC authentication
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
-- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (**Status: Planned** — no operation-aware runtime behavior implemented yet)
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
-- [`basis-core/docs/public-api.md`](../basis-core/docs/public-api.md) — the stable public API this gateway calls into
+- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–9 implemented; PR 10, this documentation pass, current; PR 11 demonstration pending)
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
+- [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) — the stable public API this gateway calls into
 
 ---
 
 ## Roadmap
 
-- **Operation-aware gateway integration** — Status: **Planned**. See [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for the full architecture and PR sequence adopting `basis-core` v0.2.0's operation-aware surface. Not started; `/v1/evaluate` is unaffected.
+- **Operation-aware gateway integration** — Status: **Implemented, feature-flagged** (`OPERATION_AWARE_ENABLED`, default `false`). See [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for the full architecture and PR sequence adopting `basis-core` v0.2.1's operation-aware surface. `/v1/evaluate` is unaffected.
+- **Bounded end-to-end demonstration (PR 11)** — Status: **Pending**. A documented, reproducible walkthrough covering allow/deny/default-deny/not-applicable/producer-rejection scenarios against the real gateway-to-kernel path. Not yet implemented. This is `basis-gateway` work — no console involvement.
+- **Operation-aware `basis-console` integration** — Status: **Follow-on work in `basis-console`**. Training mode should explain identity, producer trust, composition, provenance, kernel outcome, gateway disposition, readiness, and evidence. Operator mode should present concise operational results and actionable failure information. Both modes must consume the same governed gateway behavior; neither creates an authorization bypass.
 
 ---
 

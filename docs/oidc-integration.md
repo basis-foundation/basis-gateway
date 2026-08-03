@@ -460,5 +460,5 @@ certification or production-readiness claim for any specific OT environment.
 - [`basis-gateway/README.md`](../README.md) — environment variable reference, evaluation flow, policy format, and general setup
 - [`basis-gateway/docs/audit-model.md`](audit-model.md) — audit boundary, correlation ID flow, identity evidence, failure behavior
 - [`basis-gateway/docs/troubleshooting.md`](troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors
-- [`basis-architecture/docs/architecture/basis-gateway.md`](../../basis-architecture/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, component responsibilities _(sibling repository)_
-- [`basis-core/docs/public-api.md`](../../basis-core/docs/public-api.md) — the stable public API this gateway calls into _(sibling repository)_
+- [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, component responsibilities
+- [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) — the stable public API this gateway calls into
