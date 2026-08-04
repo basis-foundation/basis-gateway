@@ -88,6 +88,63 @@ This checklist is used for every tagged release of `basis-gateway`. Complete eac
 
 ---
 
+## v0.2.0 release preparation
+
+This section tracks the v0.2.0 release-preparation PR against the checklist above. It
+distinguishes what this PR completed from what remains for after merge — nothing in the
+"Performed only after merge" list below is complete yet.
+
+### Completed in this PR
+
+- [x] Version synchronized: `pyproject.toml` and `src/basis_gateway/__init__.py` both `0.2.0`;
+      guarded by `tests/test_version.py`
+- [x] Release notes written: [`docs/releases/v0.2.0.md`](releases/v0.2.0.md)
+- [x] Changelog finalized: `CHANGELOG.md` `[0.2.0]` dated section
+- [x] Wheel built: `basis_gateway-0.2.0-py3-none-any.whl`
+- [x] Sdist built: `basis_gateway-0.2.0.tar.gz`
+- [x] Metadata inspected (name, version, `Requires-Python`, dependency list — matches
+      `pyproject.toml`, including `basis-core>=0.2.1,<0.3.0`)
+- [x] Clean wheel install passed (fresh venv, `basis-core` then the wheel, outside any editable
+      checkout)
+- [x] Clean sdist install passed (fresh venv, `basis-core` then the sdist)
+- [x] Tests passed (full suite; see this PR's completion report for the exact count)
+- [x] Lint passed (`ruff check`)
+- [x] Formatting passed (`ruff format --check`)
+- [x] Type checking passed (`mypy --strict`)
+- [x] Demo passed (`python demo/operation-aware/run_demo.py`, all six scenarios)
+- [x] Sensitive-data review passed (no secrets, tokens, keys, or real credentials found in
+      changed files or built artifacts)
+
+### Performed only after merge
+
+- [ ] Verify `main` CI is green on the merge commit
+- [ ] Create annotated tag: `v0.2.0`
+- [ ] Push tag
+- [ ] Create GitHub Release from the tag with release notes
+- [ ] Upload wheel
+- [ ] Upload sdist
+- [ ] Upload checksums
+- [ ] Verify the release page
+- [ ] Verify downloadable artifacts
+- [ ] Update any published current-version references
+
+### Proposed post-merge release commands (not executed by this PR)
+
+```bash
+git checkout main
+git pull origin main
+git tag -a v0.2.0 -m "basis-gateway v0.2.0"
+git push origin v0.2.0
+```
+
+Then create the GitHub Release using repository-approved tooling (this repository has no
+GitHub Actions release-publishing workflow today — release creation and artifact upload is a
+manual, repository-approved step performed after the tag is pushed and CI is confirmed green;
+do not assume the `gh` CLI is installed or authenticated, and do not place credentials in
+documentation).
+
+---
+
 ## Known release blockers (resolved for v0.1.0)
 
 The following were identified as blockers during the v0.1 readiness review and are now resolved:

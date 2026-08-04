@@ -107,6 +107,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from basis_gateway import __version__
 from basis_gateway.api.routes import operation_aware_router, router
 from basis_gateway.api.schemas import ErrorResponse
 from basis_gateway.audit.writer import build_audit_writer
@@ -499,7 +500,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="basis-gateway",
         description="Authentication, identity normalization, and HTTP enforcement boundary.",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.include_router(router)
