@@ -34,6 +34,9 @@
 >   the shipped implementation differs from an early draft's wording — notably §10's
 >   evidence-composition description — a note is added inline rather than silently rewriting the
 >   historical rationale.
+> - **Since this review: `v0.2.0` has been tagged and published**, incorporating everything
+>   described above plus the bounded demonstration (PR 11). See
+>   [`docs/releases/v0.2.0.md`](../releases/v0.2.0.md).
 
 This document is the authoritative implementation plan for the operation-aware phase of `basis-gateway`: controlled adoption of the operation-aware kernel surface released in `basis-core`. Sections 1–18 below are retained in their original planning-time form as the historical design record; the callout above is the authoritative statement of current implementation state.
 

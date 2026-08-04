@@ -6,6 +6,12 @@
 **This review is evidence-based** — every claim below is backed by a specific test, source
 file, or command run against this repository during this review.
 
+> **Current status**: `v0.2.0` has since been tagged and published (see
+> [`docs/releases/v0.2.0.md`](../releases/v0.2.0.md)). §12 below and its "Release recommendation"
+> describe this repository's state at the point the release-preparation PR was reviewed, before
+> the tag and GitHub Release existed; that language is retained as a historical record of the
+> review rather than rewritten to describe the now-published release.
+
 ---
 
 ## 1. Scope reviewed
