@@ -291,3 +291,140 @@ explicitly out of scope for PR 10, per that PR's own "Explicit Non-Goals," and a
 in PR 11 (`demo/operation-aware/`) — see §11. Sample deployment tooling (Docker, Kubernetes,
 hosted control plane) remains explicitly out of scope for both PRs and is not part of this
 repository's roadmap.
+
+---
+
+## 12. Release preparation (v0.2.0)
+
+**Reviewed at**: release-preparation PR, branch `release/v0.2.0-preparation`, starting commit
+`791d89d` (merged PR 11, `demo/operation-aware-gateway`).
+
+This section closes Finding F1 and records this repository's final release-preparation state.
+Finding F2 (packaging metadata) is explicitly **not** addressed here — see below.
+
+### Selected version and rationale
+
+**`0.2.0`.** Evidence: this document's own Finding F1 explicitly recommended that "a future,
+narrowly-scoped release-preparation PR should decide the correct next version number" once the
+operation-aware feature set — a substantial, additive authorization surface — was complete. The
+`CHANGELOG.md` `[Unreleased]` section this PR promotes documents a new endpoint, a new trust
+model, new composition and audit behavior, and new readiness diagnostics, all additive and
+backward-compatible: `POST /v1/evaluate` is untouched. Per SemVer, an additive, non-breaking
+feature set is a MINOR version increment (`0.1.0` → `0.2.0`), not a PATCH (`0.1.1`, which would
+misrepresent this as a bug fix) and not a MAJOR increment (no breaking change occurred). No
+repository evidence contradicts `0.2.0`.
+
+### Synchronized version declarations
+
+`pyproject.toml` (`[project].version`) and `src/basis_gateway/__init__.py`
+(`__version__`) both updated to `"0.2.0"`. A new guard, `tests/test_version.py`, asserts both
+locations parse, agree, are valid SemVer, equal the repository-selected release version, and that
+no current-state document (README, `docs/release-readiness.md`) still claims the package is
+currently `0.1.0` — while confirming the historical `docs/releases/v0.1.0.md` is untouched.
+
+### Release notes
+
+[`docs/releases/v0.2.0.md`](../releases/v0.2.0.md) — written following the `v0.1.0` release notes'
+structure and precedent. States `/v1/evaluate` compatibility, the disabled-by-default operation-
+aware flag, the exact configuration variable names, the security model, the demonstration, known
+limitations, and upgrade guidance for existing v0.1 users. Makes no production-certification,
+device-execution, durable-audit-persistence, hosted-service, `basis-console`-integration,
+protocol-adapter-execution, tamper-evident-audit, multi-tenancy, or high-availability claim.
+
+### Changelog
+
+`CHANGELOG.md`'s prior `[Unreleased]` content is now under a dated `## [0.2.0] - 2026-08-03`
+section, organized under `Added`/`Changed`/`Security`/`Compatibility`/`Documentation`/`Notes`
+headings consistent with this changelog's existing style. An empty `[Unreleased]` heading is
+retained above it. The `[0.1.0]` entry is unchanged.
+
+### Build artifacts
+
+Built with `python -m build` (hatchling backend) from a clean `dist/`/`build/`:
+
+- `basis_gateway-0.2.0-py3-none-any.whl`
+- `basis_gateway-0.2.0.tar.gz`
+
+Exactly one wheel and one sdist produced. Wheel contents inspected via
+`python -m zipfile -l`: only `basis_gateway/` package modules plus
+`basis_gateway-0.2.0.dist-info/` (`METADATA`, `WHEEL`, `RECORD`, and `licenses/LICENSE` — the
+license file is auto-included by hatchling from the repository root even though `pyproject.toml`
+declares no explicit `license` table entry). No `.env`, key, token, `.git`, virtual environment,
+test cache, build cache, sibling-repository content, demo-generated credential, or local absolute
+path found in the wheel. Sdist contents inspected via `tar -tzf`: repository source, docs, demo,
+tests, policies, `LICENSE`, and `pyproject.toml` — no `.venv`, no build cache, no absolute
+developer paths.
+
+Wheel `METADATA` verified: `Name: basis-gateway`, `Version: 0.2.0`, `Requires-Python: >=3.10`,
+and a `Requires-Dist` list identical to `pyproject.toml`'s dependency list, including
+`basis-core<0.3.0,>=0.2.1`. No accidental dependency, no local-filesystem/Git-branch/editable-path
+dependency, and no malformed-name collision with the unrelated PyPI package.
+
+Not committed: `dist/` and `build/` remain outside version control (repository policy — this
+project does not commit built release artifacts).
+
+### Clean-install tests
+
+**Wheel**, fresh venv outside this repository's checkout: installed the local BASIS `basis-core`
+(non-editable, from the sibling checkout) first, then the built wheel with `--no-deps`, then the
+runtime dependency set. `import basis_core` and `import basis_gateway` both resolved to that
+venv's `site-packages/`, not the repository checkout. `basis_gateway.__version__ == "0.2.0"`.
+Smoke tests passed: import, `create_app()`, `GatewayConfig()` load, `GET /health` (200), a request
+to the disabled operation-aware route (`404`, confirming the route is not registered when
+`OPERATION_AWARE_ENABLED` is unset), and the version check.
+
+**Sdist**, a second fresh venv: same `basis-core` install order, then the sdist (built and
+installed via hatchling with `--no-deps`), then the runtime dependency set. `import basis_core`
+and `import basis_gateway` both resolved to that venv's `site-packages/`; no repository checkout
+path required for the gateway package itself. `create_app()` and `GET /health` (200) verified.
+
+The demo (`demo/operation-aware/run_demo.py`) is **repository-distributed**, not wheel-packaged —
+`demo/` is not included in the wheel's file list (by design; the wheel is the production service
+package). It was run directly against the repository checkout (§11) rather than against either
+clean-installed artifact.
+
+### Dependency verification
+
+For every clean-install environment, `import basis_core; print(basis_core.__file__)` resolved
+into that environment's own `site-packages/`, never the unrelated public PyPI package named
+`basis-core` (that package is not installed anywhere in this review's environments; installation
+was performed exclusively from the local BASIS `basis-core` sibling checkout). Installed
+`basis-core==0.2.1` in every environment; installed `basis-gateway==0.2.0` in every environment
+this PR built.
+
+### Demonstration result
+
+`python demo/operation-aware/run_demo.py` — all six scenarios (allow, explicit deny, default
+deny, `not_applicable`, untrusted producer, semantic startup failure) passed; exit code `0`.
+
+### Test and static-analysis result
+
+Full suite, lint, formatting, and type-checking results are recorded in this PR's completion
+report (exact counts depend on the environment `pytest` run at review time; see that report for
+authoritative figures. As a baseline reference, PR 11 recorded 1211 passed).
+
+### CI review
+
+`.github/workflows/ci.yml` already covers the Python matrix declared in `pyproject.toml`
+(`3.10`, `3.11`, `3.12`) with format, lint, type-check, and test steps, installing the `basis-core`
+sibling by checkout. It does not build or inspect packaging artifacts. This PR performed that
+verification locally (build, metadata inspection, clean wheel install, clean sdist install) rather
+than adding a new CI job — the existing test matrix plus this PR's local release validation is
+judged sufficient for this release; no CI workflow change was made.
+
+### Remaining non-blocking findings
+
+| Item | Classification |
+|---|---|
+| F1 — version metadata | **resolved by this PR** — `pyproject.toml` and `__init__.py` now `0.2.0`, guarded by `tests/test_version.py` |
+| F2 — missing `license`/`classifiers`/`authors`/`urls` metadata in `pyproject.toml` | **still non-blocking** — the package builds and installs correctly without them (verified: exactly one wheel, one sdist, both install cleanly); not addressed in this PR per its explicit scope boundary; recommend a dedicated packaging-metadata PR (tracked as a possible **PR 13**) |
+| Three governed failure reasons not reachable through the real kernel path in this test suite | **non-blocking**, unchanged from §9 |
+| Operation-aware `basis-console` UI integration | **future**, unchanged from §9 |
+| Final published-artifact checksums | **post-merge** — this PR's checksums are validation-only (computed against the locally built, not-yet-published artifacts); final checksums must be generated from the exact artifacts attached to the GitHub Release after tagging |
+
+### Release recommendation
+
+**Repository ready for v0.2.0 tag and GitHub release after this PR merges and CI passes.**
+
+Nothing in this PR was committed, pushed, tagged, or published. See this PR's completion report
+for the full adversarial review and validation command output.

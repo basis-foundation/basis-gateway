@@ -6,7 +6,7 @@
 
 This repository contains the reference implementation of basis-gateway.
 
-The v0.1 evaluation path (`POST /v1/evaluate`) is released as v0.1.0 and is intended for evaluation, experimentation, and community feedback. The operation-aware evaluation path (`POST /v1/evaluate/operation-aware`) is implemented and feature-flagged, disabled by default (see [Endpoints](#endpoints) below). Production adoption of either path should be preceded by environment-specific validation and security review.
+The v0.1 evaluation path (`POST /v1/evaluate`) was released as v0.1.0 and remains supported and unchanged. This repository is now **prepared for v0.2.0**, which adds the operation-aware evaluation path (`POST /v1/evaluate/operation-aware`) — implemented and feature-flagged, disabled by default (see [Endpoints](#endpoints) below). See [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) for the full v0.2.0 release notes. Production adoption of either path should be preceded by environment-specific validation and security review.
 
 ---
 
@@ -583,8 +583,9 @@ tests/          — see pytest output for current count; no live IdP required
 - [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) — operation-aware endpoint reference: request/response shape, action/resource grammar, producer trust, outcome matrix, examples
 - [`docs/readiness.md`](docs/readiness.md) — `/health` and `/ready`, all readiness components, the operation-aware failure matrix, operator troubleshooting
 - [`docs/release-readiness.md`](docs/release-readiness.md) — v0.1 scope, known limitations, out-of-scope items, architecture invariants confirmed
-- [`docs/release-readiness/operation-aware-gateway-readiness-review.md`](docs/release-readiness/operation-aware-gateway-readiness-review.md) — operation-aware gateway release-readiness review
+- [`docs/release-readiness/operation-aware-gateway-readiness-review.md`](docs/release-readiness/operation-aware-gateway-readiness-review.md) — operation-aware gateway release-readiness review, including final v0.2.0 release-preparation state
 - [`docs/release-candidate-assessment.md`](docs/release-candidate-assessment.md) — v0.1 release candidate assessment and verdict
+- [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) — v0.2.0 release notes (prepared, not yet tagged)
 - [`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) — v0.1.0 release notes
 - [`docs/release-checklist.md`](docs/release-checklist.md) — release checklist for v0.1 and future releases
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — startup failures, readiness diagnostics, OIDC/JWKS issues, policy errors, audit writer degradation, strict fail-closed behavior
@@ -593,7 +594,7 @@ tests/          — see pytest output for current count; no live IdP required
 - [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md) — BASIS-local token trust contract, verifier behavior, and relationship to OIDC authentication
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
-- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–10 implemented; PR 11, the bounded demonstration, current)
+- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–11 implemented, including the bounded demonstration; release preparation for v0.2.0 current)
 - [`demo/operation-aware/README.md`](demo/operation-aware/README.md) — bounded, reproducible, offline demonstration of the operation-aware gateway path
 - [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) — the stable public API this gateway calls into
@@ -604,6 +605,7 @@ tests/          — see pytest output for current count; no live IdP required
 
 - **Operation-aware gateway integration** — Status: **Implemented, feature-flagged** (`OPERATION_AWARE_ENABLED`, default `false`). See [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for the full architecture and PR sequence adopting `basis-core` v0.2.1's operation-aware surface. `/v1/evaluate` is unaffected.
 - **Bounded end-to-end demonstration (PR 11)** — Status: **Implemented**. A bounded, reproducible, offline demonstration covering allow/explicit-deny/default-deny/not-applicable/untrusted-producer/semantic-startup-failure scenarios against the real gateway-to-kernel path. See [`demo/operation-aware/`](demo/operation-aware/README.md). This is `basis-gateway` work — no console involvement.
+- **v0.2.0 release preparation** — Status: **Prepared, not yet tagged**. Version metadata, release notes, changelog, and packaging have been prepared in this repository; see [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) and [`docs/release-readiness/operation-aware-gateway-readiness-review.md`](docs/release-readiness/operation-aware-gateway-readiness-review.md) for the release recommendation.
 - **Operation-aware `basis-console` integration** — Status: **Follow-on work in `basis-console`**. Training mode should explain identity, producer trust, composition, provenance, kernel outcome, gateway disposition, readiness, and evidence. Operator mode should present concise operational results and actionable failure information. Both modes must consume the same governed gateway behavior; neither creates an authorization bypass.
 
 ---

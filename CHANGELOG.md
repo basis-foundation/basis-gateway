@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-03
+
 ### Added
 
 - **Operation-aware gateway integration** (feature-gated, disabled by default via `OPERATION_AWARE_ENABLED=false`): a new, additive `POST /v1/evaluate/operation-aware` endpoint delegating to `basis-core`'s public `OperationAwareEnforcementPoint`. Summary of the completed capability — see [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md), [`docs/configuration.md`](docs/configuration.md), and [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for full detail:
@@ -28,17 +30,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Ambiguous or incomposable requests are rejected with `400 validation_failed`: a bare verb without `resource_type`, a composite action with a `resource_type`, an invalid action/`resource_type` segment, or a caller-supplied `basis_gateway.*` context key (which would forge composition evidence).
+- `pyproject.toml` and `src/basis_gateway/__init__.py` version bumped from `0.1.0` to `0.2.0`.
+
+### Security
+
+- Operation-producer trust is an explicit, configuration-driven, exact-match, case-sensitive subject-ID allowlist (`OPERATION_PRODUCER_SUBJECT_IDS`), empty by default — no caller is a trusted producer without explicit configuration, and roles never imply producer trust.
+- An untrusted caller supplying any producer-only field is rejected (`400`) before the kernel is ever invoked, so gateway provenance cannot be forged by a caller.
+- Fail-closed HTTP classification: every non-`ALLOW` kernel result blocks; there is no permissive default or fallthrough in the classification function.
 
 ### Compatibility
 
 - `POST /v1/evaluate` remains supported, unchanged, and byte-for-byte unaffected by the operation-aware addition — no shared route, request/response model, or authorization behavior change.
 - Operation-aware mode is disabled by default (`OPERATION_AWARE_ENABLED=false`). No migration is forced; a deployment that does not set this flag observes zero behavior change.
 - Both evaluation paths may be enabled and served simultaneously on the same running instance, sharing the same authentication configuration and audit writer.
+- Dependency floor: `basis-core>=0.2.1,<0.3.0` (unchanged from the operation-aware integration work; verified against `pyproject.toml`).
+
+### Documentation
+
+- Added [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) — v0.2.0 release notes.
+- Added final release-preparation section to [`docs/release-readiness/operation-aware-gateway-readiness-review.md`](docs/release-readiness/operation-aware-gateway-readiness-review.md).
+- Updated [`docs/release-checklist.md`](docs/release-checklist.md) and [`README.md`](README.md) to reflect v0.2.0 release preparation.
 
 ### Notes
 
 - The gateway composes action strings as part of request assembly only. It does not evaluate authorization, define or extend the action vocabulary, or parse protocols. `basis-core` remains the authorization kernel and the authority that validates the action; adapters remain protocol-normalization libraries. This applies identically to the operation-aware path.
-- Known operator-relevant limitations of the operation-aware path (no policy hot reload, no durable audit store, no adapter execution confirmation, no PR 11 bounded demonstration yet, and others): see the [README](README.md#current-limitations).
+- Known operator-relevant limitations of the operation-aware path (no policy hot reload, no durable audit store, no adapter execution confirmation, and others): see the [README](README.md#current-limitations).
 
 ---
 
