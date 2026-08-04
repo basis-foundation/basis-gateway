@@ -65,7 +65,7 @@ gateway enforcement                   (HTTP status derived from the kernel resul
 evidence                              (gateway + kernel audit records, correlation_id shared throughout)
 ```
 
-This is a conceptual walkthrough, not a runnable demo environment — a bounded, reproducible demonstration is tracked separately (see [Roadmap](#roadmap)). See [POST /v1/evaluate](#post-v1evaluate) below for a working `curl` example against the v0.1 path, and [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) for request/response examples on the operation-aware path.
+This is a conceptual walkthrough. For a runnable, bounded, offline demonstration of this exact path against the real gateway-to-kernel path, see [`demo/operation-aware/`](demo/operation-aware/README.md). See [POST /v1/evaluate](#post-v1evaluate) below for a working `curl` example against the v0.1 path, and [`docs/operation-aware-endpoint.md`](docs/operation-aware-endpoint.md) for request/response examples on the operation-aware path.
 
 ---
 
@@ -96,7 +96,6 @@ This is a conceptual walkthrough, not a runnable demo environment — a bounded,
 - No background policy revalidation — the operation-aware startup semantic preflight runs once, at startup.
 - No built-in multi-tenancy.
 - No hosted-service control plane.
-- No bounded, reproducible operation-aware demonstration yet (tracked as a future PR — see [Roadmap](#roadmap)).
 
 ---
 
@@ -594,7 +593,8 @@ tests/          — see pytest output for current count; no live IdP required
 - [`docs/basis-local-token-trust.md`](docs/basis-local-token-trust.md) — BASIS-local token trust contract, verifier behavior, and relationship to OIDC authentication
 - [`.env.example`](.env.example) — annotated environment variable reference with placeholder values
 - [`docs/implementation/basis-gateway-v0.1-plan.md`](docs/implementation/basis-gateway-v0.1-plan.md) — v0.1 implementation plan
-- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–9 implemented; PR 10, this documentation pass, current; PR 11 demonstration pending)
+- [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) — operation-aware integration plan (PRs 1–10 implemented; PR 11, the bounded demonstration, current)
+- [`demo/operation-aware/README.md`](demo/operation-aware/README.md) — bounded, reproducible, offline demonstration of the operation-aware gateway path
 - [`basis-architecture/docs/architecture/basis-gateway.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/basis-gateway.md) — architectural boundaries, trust model, invariants, and component responsibilities
 - [`basis-core/docs/public-api.md`](https://github.com/basis-foundation/basis-core/blob/main/docs/public-api.md) — the stable public API this gateway calls into
 
@@ -603,7 +603,7 @@ tests/          — see pytest output for current count; no live IdP required
 ## Roadmap
 
 - **Operation-aware gateway integration** — Status: **Implemented, feature-flagged** (`OPERATION_AWARE_ENABLED`, default `false`). See [`docs/implementation/operation-aware-gateway-integration-plan.md`](docs/implementation/operation-aware-gateway-integration-plan.md) for the full architecture and PR sequence adopting `basis-core` v0.2.1's operation-aware surface. `/v1/evaluate` is unaffected.
-- **Bounded end-to-end demonstration (PR 11)** — Status: **Pending**. A documented, reproducible walkthrough covering allow/deny/default-deny/not-applicable/producer-rejection scenarios against the real gateway-to-kernel path. Not yet implemented. This is `basis-gateway` work — no console involvement.
+- **Bounded end-to-end demonstration (PR 11)** — Status: **Implemented**. A bounded, reproducible, offline demonstration covering allow/explicit-deny/default-deny/not-applicable/untrusted-producer/semantic-startup-failure scenarios against the real gateway-to-kernel path. See [`demo/operation-aware/`](demo/operation-aware/README.md). This is `basis-gateway` work — no console involvement.
 - **Operation-aware `basis-console` integration** — Status: **Follow-on work in `basis-console`**. Training mode should explain identity, producer trust, composition, provenance, kernel outcome, gateway disposition, readiness, and evidence. Operator mode should present concise operational results and actionable failure information. Both modes must consume the same governed gateway behavior; neither creates an authorization bypass.
 
 ---

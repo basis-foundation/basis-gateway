@@ -1,0 +1,38 @@
+{
+  "bundle_id": "operation-aware-demo",
+  "bundle_version": "1.0.0",
+  "schema_version": "1.0.0",
+  "policy_owner": "basis-gateway-demo",
+  "description": "Bounded, offline demonstration bundle for the operation-aware gateway path. Not a production policy.",
+  "scope": {
+    "actions": ["read:ahu", "write:ahu", "execute:ahu"]
+  },
+  "rules": [
+    {
+      "rule_id": "allow-read-ahu",
+      "effect": "allow",
+      "match": {
+        "actions": ["read:ahu"]
+      },
+      "explanation": "Any authenticated caller may read AHU state."
+    },
+    {
+      "rule_id": "allow-write-ahu",
+      "effect": "allow",
+      "match": {
+        "actions": ["write:ahu"],
+        "subject_roles": ["operator"]
+      },
+      "explanation": "Subjects holding the operator role may write AHU setpoints."
+    },
+    {
+      "rule_id": "deny-write-protected-ahu",
+      "effect": "deny",
+      "match": {
+        "actions": ["write:ahu"],
+        "resources": ["ahu:protected-1"]
+      },
+      "explanation": "Writes to the protected AHU unit are explicitly denied regardless of role."
+    }
+  ]
+}

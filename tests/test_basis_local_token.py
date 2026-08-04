@@ -746,8 +746,27 @@ class TestGatewayIdentityAdapter:
 
 
 def test_module_is_independently_importable() -> None:
-    """This module must not require any gateway runtime wiring to import."""
+    """This module must not require any gateway runtime wiring to import.
+
+    ``importlib.reload()`` re-executes this module's body in place, which
+    redefines every class it declares (``BasisLocalTokenTrustConfig``,
+    ``BasisLocalTokenVerificationResult``, ...) as brand-new class objects.
+    ``basis_gateway.auth.runtime`` imported the *original* classes via
+    ``from basis_gateway.auth.basis_local_token import
+    BasisLocalTokenTrustConfig`` at its own import time and keeps that
+    reference regardless of this reload, so a real ``BasisLocalTokenTrustConfig``
+    built through ``runtime.build_basis_local_token_trust_config`` would
+    silently fail ``isinstance()`` checks inside this module's (reloaded)
+    functions for the rest of the test session — a test-isolation hazard
+    this test must not leak into any other test. Snapshot and restore this
+    module's ``__dict__`` so the reload's effect is confined to this test.
+    """
     import importlib
 
-    reloaded = importlib.reload(blt)
-    assert reloaded.verify_basis_local_identity_token is not None
+    original_attrs = dict(blt.__dict__)
+    try:
+        reloaded = importlib.reload(blt)
+        assert reloaded.verify_basis_local_identity_token is not None
+    finally:
+        blt.__dict__.clear()
+        blt.__dict__.update(original_attrs)

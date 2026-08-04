@@ -1,0 +1,23 @@
+{
+  "bundle_id": "operation-aware-demo-invalid",
+  "bundle_version": "1.0.0",
+  "schema_version": "1.0.0",
+  "policy_owner": "basis-gateway-demo",
+  "description": "Structurally valid but semantically invalid demonstration bundle: two rules share the same rule_id. Used only to demonstrate the startup semantic preflight failure path (scenario: semantic-startup-failure). Never loaded into a serving application in this demonstration.",
+  "rules": [
+    {
+      "rule_id": "duplicate-rule-id",
+      "effect": "allow",
+      "match": {
+        "actions": ["read:ahu"]
+      }
+    },
+    {
+      "rule_id": "duplicate-rule-id",
+      "effect": "deny",
+      "match": {
+        "actions": ["write:ahu"]
+      }
+    }
+  ]
+}
