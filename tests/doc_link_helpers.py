@@ -275,7 +275,19 @@ def git_ref_has_path(repo_dir: Path, ref: str, path: str) -> bool | None:
     checkout, or ``None`` if this cannot be determined locally (``git``
     missing, ref not resolvable in this checkout, timeout). Uses
     ``git cat-file -e <ref>:<path>``, a local object-database lookup --
-    never a network operation."""
+    never a network operation.
+
+    Note: this alone cannot distinguish "``ref`` doesn't exist in this
+    checkout at all" from "``ref`` exists but ``path`` is missing at it" --
+    ``git cat-file -e <ref>:<path>`` returns the same nonzero exit code for
+    both. A shallow checkout without the release tags fetched (no
+    ``fetch-depth: 0`` / ``fetch-tags: true``) hits the first case for every
+    single path, which looks identical to "every file was deleted" unless
+    ref resolvability is checked first. Callers that need to tell these
+    apart -- e.g. to produce one actionable "tags unavailable in this
+    checkout" failure instead of N misleading "missing file" failures --
+    should call ``git_ref_exists`` first; see ``describe_unavailable_ref``.
+    """
     if not path:
         return None
     try:
@@ -289,6 +301,81 @@ def git_ref_has_path(repo_dir: Path, ref: str, path: str) -> bool | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.returncode == 0
+
+
+def git_ref_exists(repo_dir: Path, ref: str) -> bool | None:
+    """True/False if ``ref`` resolves to a commit in the local ``repo_dir``
+    checkout, or ``None`` if this cannot be determined locally (``git``
+    binary missing, timeout). Uses
+    ``git rev-parse --verify --quiet <ref>^{commit}``, a local ref-resolution
+    lookup -- never a network operation, and never a fallback to any other
+    ref (``main`` or otherwise): an unresolvable ref is reported as such,
+    not silently substituted.
+
+    This is the check a shallow checkout fails: ``actions/checkout``'s
+    default ``fetch-depth: 1`` fetches only the triggering commit and does
+    not fetch tags unless ``fetch-tags: true`` is also set, so a tag ref
+    like ``v0.2.0`` does not resolve at all in that checkout -- distinct from
+    (and diagnosable separately from) a tag that resolves but is missing a
+    specific file.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=repo_dir,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.returncode == 0
+
+
+def describe_unavailable_ref(ref: str) -> str:
+    """The single, actionable diagnostic message used whenever a release-tag
+    ref cannot be resolved locally -- shared so the wording is identical
+    everywhere it is raised."""
+    return (
+        f"Git ref {ref!r} is unavailable in this checkout. CI must fetch release tags "
+        f"and tagged history, for example with actions/checkout fetch-depth: 0."
+    )
+
+
+@dataclass(frozen=True)
+class RefPathsVerification:
+    """The result of verifying a set of paths against a single tag/ref,
+    with ref-resolvability checked exactly once (not once per path) so an
+    unavailable ref produces one diagnostic, not one per path."""
+
+    ref: str
+    ref_available: bool | None
+    checked_paths: tuple[str, ...]
+    missing_paths: tuple[str, ...]
+
+    @property
+    def ref_unavailable(self) -> bool:
+        return self.ref_available is False
+
+    @property
+    def ref_undeterminable(self) -> bool:
+        return self.ref_available is None
+
+
+def verify_paths_at_ref(repo_dir: Path, ref: str, paths: list[str]) -> RefPathsVerification:
+    """Check whether ``ref`` resolves at all before checking any individual
+    path against it, so the result distinguishes "ref unavailable" (one
+    fact, independent of how many paths were being checked) from "ref
+    resolved but these specific paths are missing at it"."""
+    available = git_ref_exists(repo_dir, ref)
+    if available is not True:
+        return RefPathsVerification(
+            ref=ref, ref_available=available, checked_paths=(), missing_paths=()
+        )
+    missing = [p for p in paths if not git_ref_has_path(repo_dir, ref, p)]
+    return RefPathsVerification(
+        ref=ref, ref_available=True, checked_paths=tuple(paths), missing_paths=tuple(missing)
+    )
 
 
 # ---------------------------------------------------------------------------

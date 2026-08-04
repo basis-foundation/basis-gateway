@@ -17,8 +17,13 @@ link- and portability-focused only. Shared classification/resolution logic
 lives in ``tests/doc_link_helpers.py``.
 
 All checks are offline. Tag-pinned local-target verification uses
+``git rev-parse`` (to confirm the tag ref itself resolves) followed by
 ``git cat-file -e <tag>:<path>`` against this repository's own local git
-history -- never a network request.
+history -- never a network request. The two steps are checked separately so
+a checkout that never fetched release tags (e.g. GitHub Actions' default
+shallow, tagless checkout) produces one actionable "ref unavailable"
+failure instead of a wall of "every file is missing" failures that hide the
+real cause. See ``tests/doc_link_helpers.py``'s ``verify_paths_at_ref``.
 """
 
 from __future__ import annotations
@@ -30,11 +35,12 @@ import pytest
 from doc_link_helpers import (
     REPO_ROOT,
     THIS_REPO,
+    describe_unavailable_ref,
     evaluate_links_in_file,
-    git_ref_has_path,
     github_link_parts,
     link_targets,
     read,
+    verify_paths_at_ref,
 )
 
 V010 = REPO_ROOT / "docs" / "releases" / "v0.1.0.md"
@@ -124,27 +130,50 @@ def _tag_pinned_basis_gateway_targets(path: Path) -> list[tuple[str, str, str]]:
 
 @pytest.mark.parametrize("path", RELEASE_NOTES, ids=lambda p: p.name)
 def test_tag_pinned_targets_exist_at_the_referenced_tag(path: Path) -> None:
-    missing = []
-    not_locally_verifiable = []
+    """Every tag-pinned basis-gateway link target must exist in the exact
+    tagged snapshot it claims to reference.
+
+    Ref resolvability is checked once per distinct ref, before any
+    individual path is checked against it (``verify_paths_at_ref``) -- not
+    once per link. That ordering is what makes the failure actionable: a
+    checkout that never fetched release tags reports one clear "ref
+    unavailable, fetch tags" failure, never a wall of N "file is missing"
+    failures that all have the same real cause and none of the right fix.
+    A ref that *does* resolve but is genuinely missing a referenced file is
+    reported the other way -- as a specific missing-path failure -- because
+    that is a real content defect, not a checkout-configuration one, and
+    must never be silently downgraded to a skip.
+    """
+    targets_by_ref: dict[str, list[tuple[str, str]]] = {}
     for target, ref, file_path in _tag_pinned_basis_gateway_targets(path):
-        exists = git_ref_has_path(REPO_ROOT, ref, file_path)
-        if exists is None:
-            not_locally_verifiable.append(target)
-        elif not exists:
-            missing.append(target)
-    assert not missing, (
-        f"{path.relative_to(REPO_ROOT)}: tag-pinned link target(s) do not exist at their "
-        f"referenced tag: {missing}"
-    )
-    # Not locally verifiable (e.g. git unavailable) is reported, not failed --
-    # this suite must stay green in any environment with a working local
-    # git binary and this repository's own history, which is the only
-    # dependency it actually requires (no sibling checkout, no network).
-    if not_locally_verifiable:
-        pytest.skip(
-            f"could not locally verify tag-pinned target(s) (no git / no local history): "
-            f"{not_locally_verifiable}"
-        )
+        targets_by_ref.setdefault(ref, []).append((target, file_path))
+
+    for ref, target_paths in sorted(targets_by_ref.items()):
+        paths = [file_path for _, file_path in target_paths]
+        result = verify_paths_at_ref(REPO_ROOT, ref, paths)
+
+        if result.ref_unavailable:
+            pytest.fail(
+                f"{path.relative_to(REPO_ROOT)}: cannot verify link(s) pinned to ref {ref!r} -- "
+                + describe_unavailable_ref(ref)
+            )
+        if result.ref_undeterminable:
+            # git itself could not be invoked in this environment (binary
+            # missing, timeout) -- distinct from "ref not fetched", and not
+            # something a release-integrity test should silently pass on.
+            pytest.fail(
+                f"{path.relative_to(REPO_ROOT)}: could not run git to verify ref {ref!r} "
+                f"(git binary unavailable or timed out) -- link target(s) not verified: "
+                f"{[t for t, _ in target_paths]}"
+            )
+
+        missing_paths = set(result.missing_paths)
+        if missing_paths:
+            missing_targets = [t for t, p in target_paths if p in missing_paths]
+            pytest.fail(
+                f"{path.relative_to(REPO_ROOT)}: ref {ref!r} resolved, but tag-pinned link "
+                f"target(s) do not exist in that tagged snapshot: {missing_targets}"
+            )
 
 
 # ---------------------------------------------------------------------------
