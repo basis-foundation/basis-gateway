@@ -15,6 +15,11 @@ dependencies = [
     "PyJWT[crypto]>=2.8.0",
     "httpx>=0.27.0",
     "basis-core>=0.2.1,<0.3.0",
+    # X.509 leaf-certificate parsing for producer mTLS identity derivation
+    # (src/basis_gateway/auth/producer_mtls.py, ADR-0008/ADR-0009, Phase 1B.1).
+    # Previously only a dev-extra dependency; promoted to a runtime dependency
+    # because production gateway code now imports `cryptography` directly.
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +29,6 @@ dev = [
     "pytest-httpserver>=1.0.0",
     "mypy>=1.10.0",
     "ruff>=0.4.0",
-    "cryptography>=42.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
