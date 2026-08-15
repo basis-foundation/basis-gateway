@@ -33,6 +33,9 @@ packages = ["src/basis_gateway"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: real-socket/real-TLS integration tests (see tests/integration/), slower than the unit suite but not skipped by default",
+]
 
 [tool.ruff]
 src = ["src"]
