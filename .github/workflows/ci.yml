@@ -38,6 +38,27 @@ jobs:
       - name: Install basis-gateway with dev dependencies
         run: pip install -e ".[dev]"
 
+      - name: Install nginx (Phase 1B.2 real-NGINX producer-mTLS trust-boundary suite)
+        # tests/integration/test_producer_mtls_trusted_proxy_boundary.py proves the
+        # ADR-0009 trusted-proxy ingress boundary against a real nginx process --
+        # this cannot be satisfied by a mock (see
+        # docs/implementation/producer-mtls-phase-1b2.md). The distribution-provided
+        # package (already includes ngx_http_ssl_module in Ubuntu's standard prebuilt
+        # binaries) is sufficient; no build step, no container image, and no
+        # additional proxy technology is introduced. If nginx is unavailable, the
+        # suite skips itself with an explicit reason rather than failing CI, but
+        # Phase 1B.2's trust boundary is not considered proven until this step has
+        # run successfully at least once.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nginx
+
+      - name: Verify nginx is available
+        # Fails CI loudly here, at the point of installation, rather than
+        # letting the dedicated boundary suite below silently skip itself
+        # because the "nginx" executable turned out not to be on PATH.
+        run: |
+          command -v nginx
+          nginx -v
+
       - name: Format check
         run: ruff format --check src tests
 
@@ -46,6 +67,17 @@ jobs:
 
       - name: Type check
         run: mypy src
+
+      - name: Producer mTLS trusted-proxy boundary suite (real NGINX, mandatory)
+        # Runs tests/integration/test_producer_mtls_trusted_proxy_boundary.py
+        # on its own, ahead of the full suite below, so this security-critical
+        # boundary (Phase 1B.2 -- ADR-0009) is proven with real NGINX before
+        # anything else in the job, and a failure here is attributable to
+        # this suite specifically rather than buried in the full pytest run.
+        # With nginx confirmed present above, this suite's own
+        # skipif(nginx unavailable) guard never triggers here -- it always
+        # executes for real in this job.
+        run: pytest tests/integration/test_producer_mtls_trusted_proxy_boundary.py -v
 
       - name: Tests
         run: pytest

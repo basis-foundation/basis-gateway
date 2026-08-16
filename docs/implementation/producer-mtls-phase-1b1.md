@@ -1,6 +1,9 @@
 # Producer mTLS: Phase 1B.1 — Certificate Identity and Exact Admission Foundation
 
 **Status: foundation slice only. Not producer mTLS end to end. Not wired to any live endpoint.**
+**Phase 1B.2** (see [`producer-mtls-phase-1b2.md`](producer-mtls-phase-1b2.md)) builds the trusted
+NGINX ingress and internal header-retrieval boundary on top of this module's certificate-identity
+pipeline, still without wiring either to the live operation-aware endpoint.
 
 This document describes exactly what Phase 1B.1 implements, using the architectural authority of
 [ADR-0008](https://github.com/basis-foundation/basis-architecture/blob/main/docs/adr/0008-producer-workload-authentication-and-admission.md)

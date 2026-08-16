@@ -141,6 +141,33 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
         default=None, alias="OPERATION_AWARE_POLICY_BUNDLE_PATH"
     )
 
+    # Trusted-proxy producer-mTLS ingress mode (Phase 1B.2 — ADR-0009,
+    # basis-architecture docs/architecture/producer-mtls-proxy-trust-boundary.md
+    # §15). When True, basis-gateway's internal certificate-header retrieval
+    # primitive (src/basis_gateway/auth/producer_mtls_trusted_proxy.py) will
+    # look for the private X-BASIS-Producer-Client-Cert header on incoming
+    # requests. This boolean is ONLY safe to enable when the deployment is
+    # actually running behind the ADR-0009 trusted NGINX -> Unix-domain-socket
+    # ingress (examples/producer-mtls/) that unconditionally overwrites that
+    # header with the TLS-authenticated leaf certificate — enabling it does
+    # not, by itself, make the header trustworthy; the topology is what makes
+    # it trustworthy, not this setting's name. See
+    # docs/implementation/producer-mtls-phase-1b2.md.
+    #
+    # Disabled by default: an ordinary deployment that never sets this
+    # variable observes no behavior change whatsoever — the header cannot
+    # establish producer trust, its presence never triggers certificate
+    # parsing, and no new header-based authentication path exists for normal
+    # TCP deployments.
+    #
+    # This setting is NOT wired to any live endpoint, to
+    # OperationProducerTrust, or to producer admission in this PR — that
+    # integration is Phase 1B.3's scope. Enabling it today has no effect on
+    # POST /v1/evaluate/operation-aware or any other route.
+    operation_producer_mtls_trusted_proxy_enabled: bool = Field(
+        default=False, alias="OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED"
+    )
+
     @field_validator("operation_producer_subject_ids", mode="before")
     @classmethod
     def parse_operation_producer_subject_ids(cls, v: Any) -> frozenset[str]:
