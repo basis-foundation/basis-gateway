@@ -77,9 +77,17 @@ __all__ = [
     "REASON_INVALID_FIELDS",
     "REASON_INVALID_TOKEN",
     "REASON_MALFORMED_BODY",
+    "PRODUCER_MTLS_TRUST_FAILED",
     "REASON_MISSING_AUDIT_EVIDENCE",
     "REASON_MISSING_TOKEN",
     "REASON_PRODUCER_CONTEXT_REJECTED",
+    "REASON_PRODUCER_MTLS_DUPLICATE_ASSERTION",
+    "REASON_PRODUCER_MTLS_MALFORMED_CERTIFICATE",
+    "REASON_PRODUCER_MTLS_MALFORMED_ENCODING",
+    "REASON_PRODUCER_MTLS_MISSING_ASSERTION",
+    "REASON_PRODUCER_MTLS_MULTIPLE_ELIGIBLE_URI_SANS",
+    "REASON_PRODUCER_MTLS_NO_ELIGIBLE_URI_SAN",
+    "REASON_PRODUCER_MTLS_OVERSIZED_ASSERTION",
     "REASON_RESERVED_CONTEXT_KEY",
     "REASON_VERIFIER_NOT_CONFIGURED",
     "VALIDATION_FAILED",
@@ -119,6 +127,16 @@ EVALUATOR_UNAVAILABLE = "gateway.operation_aware_evaluator_unavailable"
 #: A gateway-internal invariant violation or unexpected exception occurred;
 #: request failed closed.
 EVALUATION_FAILED_CLOSED = "gateway.operation_aware_evaluation_failed_closed"
+
+#: New for Phase 1B.3: the trusted-proxy mTLS producer certificate assertion
+#: was missing, duplicated, oversized, malformed (encoding or X.509), or
+#: yielded zero or multiple eligible URI SANs -- a gateway/transport
+#: trust-boundary failure (ADR-0009 Layer 2/Layer 3), never a caller-body
+#: validation failure. The kernel is never invoked for this action. A
+#: missing assertion (per the merged
+#: producer-mtls-proxy-trust-boundary.md §11/§18) is a Layer-2 failure like
+#: duplicated/oversized -- not an ordinary untrusted-producer outcome.
+PRODUCER_MTLS_TRUST_FAILED = "gateway.operation_aware_producer_mtls_trust_failed"
 
 #: Lightweight strict-mode (AUDIT_FAIL_CLOSED=true) recovery probe — mirrors
 #: audit/gateway_events.py's AUDIT_RECOVERY_PROBE, kept as a distinct action
@@ -169,6 +187,46 @@ REASON_COMPOSITION_INTERNAL_ERROR = "composition_internal_error"
 #: New: OperationAwareEnforcementResult.audit_evidence was None despite a
 #: real kernel invocation (the enforcement point's internal-error fallback).
 REASON_MISSING_AUDIT_EVIDENCE = "missing_audit_evidence"
+
+# ---------------------------------------------------------------------------
+# Phase 1B.3: producer-mTLS trust-boundary failure reason vocabulary
+# ---------------------------------------------------------------------------
+# Distinguishes, internally, the specific ADR-0009 Layer 2 (proxy/backend
+# assertion shape) and Layer 3 (certificate identity derivation) failure that
+# caused PRODUCER_MTLS_TRUST_FAILED -- never the raw certificate/PEM content
+# itself, which is never included in any of these reasons or in the event
+# detail that carries them.
+
+#: Layer 2: no X-BASIS-Producer-Client-Cert assertion was present on a
+#: request that reached the gateway while trusted-proxy mode is enabled --
+#: per the merged producer-mtls-proxy-trust-boundary.md §11/§18, this is a
+#: proxy/backend trust-boundary failure (a trusted-topology assumption
+#: failed), not an ordinary "no producer certificate presented" condition.
+#: No OperationProducerTrust is constructed and no legacy-allowlist
+#: fallback occurs for this reason.
+REASON_PRODUCER_MTLS_MISSING_ASSERTION = "producer_mtls_missing_assertion"
+
+#: Layer 2: more than one occurrence of the internal certificate header was
+#: present on the request.
+REASON_PRODUCER_MTLS_DUPLICATE_ASSERTION = "producer_mtls_duplicate_assertion"
+
+#: Layer 2: the internal certificate header's value exceeded the accepted
+#: size bound.
+REASON_PRODUCER_MTLS_OVERSIZED_ASSERTION = "producer_mtls_oversized_assertion"
+
+#: Layer 2: the header's value could not be strictly percent-decoded
+#: (malformed percent-encoding or a non-ASCII character).
+REASON_PRODUCER_MTLS_MALFORMED_ENCODING = "producer_mtls_malformed_encoding"
+
+#: Layer 3: the decoded value was not exactly one well-formed PEM/X.509 leaf
+#: certificate.
+REASON_PRODUCER_MTLS_MALFORMED_CERTIFICATE = "producer_mtls_malformed_certificate"
+
+#: Layer 3: the certificate has zero eligible URI SAN entries.
+REASON_PRODUCER_MTLS_NO_ELIGIBLE_URI_SAN = "producer_mtls_no_eligible_uri_san"
+
+#: Layer 3: the certificate has more than one eligible URI SAN entry.
+REASON_PRODUCER_MTLS_MULTIPLE_ELIGIBLE_URI_SANS = "producer_mtls_multiple_eligible_uri_sans"
 
 # ---------------------------------------------------------------------------
 # GatewayAuditEvent — the contract-shaped, gateway-local audit artifact
@@ -356,6 +414,7 @@ def build_operation_aware_audit_detail(
     operation_producer_subject_id: str | None,
     operation_producer_trust_status: str,
     operation_producer_trust_source: str,
+    operation_producer_workload_identity: str | None = None,
     provenance: Mapping[str, ProvenanceClassification],
 ) -> dict[str, Any]:
     """Build the outer durable record's ``detail`` payload.
@@ -367,6 +426,14 @@ def build_operation_aware_audit_detail(
     facts already available at the route boundary. ``audit_evidence`` is
     never nested inside ``gateway_audit_event``, and ``gateway_audit_event``
     is never written without ``audit_evidence`` present in this same dict.
+
+    ``operation_producer_workload_identity`` (Phase 1B.3, additive) is the
+    mTLS producer's derived, non-secret URI SAN (present only when
+    ``operation_producer_trust_source`` is one of the ``MTLS_*`` members —
+    see ``OperationProducerTrustSource``); ``None`` on the legacy path.
+    Recording it here is internal gateway diagnostic context only — this
+    dict is not a ``basis-schemas`` contract and this field is not published
+    anywhere else. Never the raw certificate/PEM content.
     """
     return {
         "http_method": http_method,
@@ -375,6 +442,7 @@ def build_operation_aware_audit_detail(
         "operation_producer_subject_id": operation_producer_subject_id,
         "operation_producer_trust_status": operation_producer_trust_status,
         "operation_producer_trust_source": operation_producer_trust_source,
+        "operation_producer_workload_identity": operation_producer_workload_identity,
         "enforcement_action": gateway_audit_event.enforcement_action,
         "provenance": serialize_provenance(provenance),
         "gateway_audit_event": gateway_audit_event.to_dict(),
@@ -488,6 +556,7 @@ def emit_operation_aware_completed_event(
         operation_producer_subject_id=composed.operation_producer_trust.operation_producer_subject_id,
         operation_producer_trust_status=composed.operation_producer_trust.status.value,
         operation_producer_trust_source=composed.operation_producer_trust.source.value,
+        operation_producer_workload_identity=composed.operation_producer_trust.producer_workload_identity,
         provenance=composed.provenance,
     )
 
@@ -547,6 +616,7 @@ def emit_operation_aware_missing_evidence_event(
         "http_status": http_status,
         "operation_producer_subject_id": producer_trust.operation_producer_subject_id,
         "operation_producer_trust_status": producer_trust.status.value,
+        "operation_producer_workload_identity": producer_trust.producer_workload_identity,
     }
 
     try:

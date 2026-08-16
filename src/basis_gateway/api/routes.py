@@ -60,10 +60,20 @@ from basis_gateway.audit.operation_aware_gateway_events import (
     REASON_ACTION_OR_RESOURCE_COMPOSITION_FAILED,
     REASON_COMPOSITION_INTERNAL_ERROR,
     REASON_PRODUCER_CONTEXT_REJECTED,
+    REASON_PRODUCER_MTLS_DUPLICATE_ASSERTION,
+    REASON_PRODUCER_MTLS_MALFORMED_CERTIFICATE,
+    REASON_PRODUCER_MTLS_MALFORMED_ENCODING,
+    REASON_PRODUCER_MTLS_MISSING_ASSERTION,
+    REASON_PRODUCER_MTLS_MULTIPLE_ELIGIBLE_URI_SANS,
+    REASON_PRODUCER_MTLS_NO_ELIGIBLE_URI_SAN,
+    REASON_PRODUCER_MTLS_OVERSIZED_ASSERTION,
     REASON_RESERVED_CONTEXT_KEY,
     emit_operation_aware_completed_event,
     emit_operation_aware_missing_evidence_event,
     emit_operation_aware_system_event,
+)
+from basis_gateway.audit.operation_aware_gateway_events import (
+    PRODUCER_MTLS_TRUST_FAILED as OA_PRODUCER_MTLS_TRUST_FAILED,
 )
 from basis_gateway.audit.operation_aware_gateway_events import (
     REASON_EVALUATION_EXCEPTION as OA_REASON_EVALUATION_EXCEPTION,
@@ -98,6 +108,20 @@ from basis_gateway.audit.operation_aware_gateway_events import (
 from basis_gateway.auth.errors import AuthenticationError, SubjectMappingError, TokenExtractionError
 from basis_gateway.auth.oidc import extract_bearer_token
 from basis_gateway.auth.operation_producer import classify_operation_producer
+from basis_gateway.auth.operation_producer_mtls import (
+    MissingProducerCertificateAssertionError,
+    resolve_operation_producer_trust,
+)
+from basis_gateway.auth.producer_mtls import (
+    CertificateAssertionDecodingError,
+    CertificateParsingError,
+    MultipleEligibleUriSansError,
+    NoEligibleUriSanError,
+)
+from basis_gateway.auth.producer_mtls_trusted_proxy import (
+    DuplicateProducerCertificateAssertionError,
+    OversizedProducerCertificateAssertionError,
+)
 from basis_gateway.auth.runtime import AuthNotConfiguredError, authenticate
 from basis_gateway.config import AuthMode
 from basis_gateway.core.actions import (
@@ -242,6 +266,71 @@ def _validation_failed(message: str, correlation_id: str) -> JSONResponse:
             correlation_id=correlation_id,
         ).model_dump(exclude_none=True),
     )
+
+
+def _producer_certificate_rejected(correlation_id: str) -> JSONResponse:
+    """400 — the trusted-proxy mTLS producer certificate assertion was
+    missing, duplicated, oversized, malformed, or failed certificate-identity
+    derivation (ADR-0009 Layer 2/Layer 3). Distinguishable from ordinary
+    request-body ``validation_failed`` so operators can tell a producer
+    mTLS trust-boundary failure apart from a caller-body shape error.
+
+    Never includes certificate/PEM content, encoded assertion bytes, or the
+    exception's own message (which could echo fragments of the malformed
+    input) — a fixed, generic message only.
+    """
+    return JSONResponse(
+        status_code=400,
+        content=ErrorResponse(
+            error="producer_certificate_rejected",
+            message="Producer mTLS certificate assertion could not be established as trustworthy",
+            correlation_id=correlation_id,
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _producer_mtls_failure_reason(
+    exc: (
+        MissingProducerCertificateAssertionError
+        | DuplicateProducerCertificateAssertionError
+        | OversizedProducerCertificateAssertionError
+        | CertificateAssertionDecodingError
+        | CertificateParsingError
+        | NoEligibleUriSanError
+        | MultipleEligibleUriSansError
+    ),
+) -> str:
+    """Map a producer-mTLS trust-boundary exception to its audit reason
+    constant (``basis_gateway.audit.operation_aware_gateway_events``).
+
+    A plain ``isinstance`` chain, not a ``dict``/``type``-keyed lookup,
+    because ``NoEligibleUriSanError``/``MultipleEligibleUriSansError`` are
+    both subclasses of a shared ``ProducerIdentityError`` base (and
+    ``MissingProducerCertificateAssertionError`` is itself a subclass of
+    ``TrustedProxyAssertionError``, the same base
+    ``DuplicateProducerCertificateAssertionError``/
+    ``OversizedProducerCertificateAssertionError`` use) and an exact
+    ``type(exc)`` lookup would be more brittle to a future subclass than
+    ``isinstance`` checked in the specific-before-general order below (each
+    of these seven exception types is currently a direct, terminal subclass,
+    so the order here does not currently affect the result — it is written
+    defensively in case that ever changes).
+    """
+    if isinstance(exc, MissingProducerCertificateAssertionError):
+        return REASON_PRODUCER_MTLS_MISSING_ASSERTION
+    if isinstance(exc, DuplicateProducerCertificateAssertionError):
+        return REASON_PRODUCER_MTLS_DUPLICATE_ASSERTION
+    if isinstance(exc, OversizedProducerCertificateAssertionError):
+        return REASON_PRODUCER_MTLS_OVERSIZED_ASSERTION
+    if isinstance(exc, CertificateAssertionDecodingError):
+        return REASON_PRODUCER_MTLS_MALFORMED_ENCODING
+    if isinstance(exc, CertificateParsingError):
+        return REASON_PRODUCER_MTLS_MALFORMED_CERTIFICATE
+    if isinstance(exc, NoEligibleUriSanError):
+        return REASON_PRODUCER_MTLS_NO_ELIGIBLE_URI_SAN
+    if isinstance(exc, MultipleEligibleUriSansError):
+        return REASON_PRODUCER_MTLS_MULTIPLE_ELIGIBLE_URI_SANS
+    raise AssertionError(f"unreachable: unrecognized producer-mTLS exception type {type(exc)!r}")
 
 
 def _evaluator_unavailable(correlation_id: str) -> JSONResponse:
@@ -756,8 +845,13 @@ async def evaluate(
         "Operation-producer-only fields (operation_intent, location, device, "
         "protocol_context, safety_context, environment_context, risk_context, "
         "identity_evidence_reference, adapter_evidence_reference) may only be supplied by "
-        "a caller the gateway has classified as a trusted operation producer "
-        "(OPERATION_PRODUCER_SUBJECT_IDS); an ordinary authenticated caller supplying any "
+        "a caller the gateway has classified as a trusted operation producer. Producer "
+        "trust is established one of two ways, selected by "
+        "OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED: the legacy exact-match bearer-subject "
+        "allowlist (OPERATION_PRODUCER_SUBJECT_IDS) when trusted-proxy mTLS mode is disabled "
+        "(the default), or an admitted mTLS producer certificate URI SAN "
+        "(OPERATION_PRODUCER_MTLS_ADMITTED_URIS) when trusted-proxy mTLS mode is enabled — "
+        "never both for the same request. An ordinary authenticated caller supplying any "
         "of these fields is rejected. The response preserves the kernel's evaluation "
         "status, outcome, failure reason, and computed disposition exactly — see "
         "docs/implementation/operation-aware-gateway-integration-plan.md §9 for the "
@@ -965,10 +1059,56 @@ async def evaluate_operation_aware(
     # Derived fresh, per request, from the already-authenticated subject and
     # current gateway configuration only (§5a) — never from anything the
     # caller supplied in the request body.
-    trusted_subject_ids = (
-        config.operation_producer_subject_ids if config is not None else frozenset()
-    )
-    producer_trust = classify_operation_producer(normalized_subject, trusted_subject_ids)
+    #
+    # Phase 1B.3: when config.operation_producer_mtls_trusted_proxy_enabled is
+    # True, resolve_operation_producer_trust() establishes producer trust
+    # exclusively via the ADR-0009 certificate pipeline
+    # (auth/operation_producer_mtls.py) -- OPERATION_PRODUCER_SUBJECT_IDS is
+    # never consulted for this request; there is no fallback between the two
+    # mechanisms. When trusted-proxy mode is disabled (the default), this
+    # calls the unchanged, existing classify_operation_producer() exactly as
+    # before (import retained above for that reason). A missing, malformed,
+    # duplicate, oversized, or certificate-identity-invalid mTLS assertion is
+    # a Layer 2/Layer 3 (ADR-0009, per the merged
+    # producer-mtls-proxy-trust-boundary.md §11/§18) trust-boundary failure:
+    # the request is rejected here, before request composition or kernel
+    # evaluation, and no OperationProducerTrust is ever constructed for it.
+    # A *missing* assertion (MissingProducerCertificateAssertionError) is a
+    # Layer-2 trust-boundary failure like duplicate/oversized -- it is never
+    # reinterpreted as an ordinary bearer-only caller, and there is no
+    # fallback to OPERATION_PRODUCER_SUBJECT_IDS even when the bearer
+    # subject is itself allowlisted.
+    if config is None:
+        producer_trust = classify_operation_producer(normalized_subject, frozenset())
+    else:
+        try:
+            producer_trust = resolve_operation_producer_trust(
+                request, subject=normalized_subject, config=config
+            )
+        except (
+            MissingProducerCertificateAssertionError,
+            DuplicateProducerCertificateAssertionError,
+            OversizedProducerCertificateAssertionError,
+            CertificateAssertionDecodingError,
+            CertificateParsingError,
+            NoEligibleUriSanError,
+            MultipleEligibleUriSansError,
+        ) as exc:
+            log.info(
+                "Producer mTLS trust resolution failed before kernel evaluation (type=%s)",
+                type(exc).__name__,
+            )
+            emit_operation_aware_system_event(
+                audit_writer,
+                action=OA_PRODUCER_MTLS_TRUST_FAILED,
+                correlation_id=correlation_id,
+                http_method=http_method,
+                request_path=request_path,
+                reason=_producer_mtls_failure_reason(exc),
+                http_status=400,
+                subject_id=normalized_subject.subject_id,
+            )
+            return _producer_certificate_rejected(correlation_id)
 
     # ── 5. Provenance-gated composition ──────────────────────────────────────
     # compose_operation_aware_input (PR 4) rejects producer-only fields from

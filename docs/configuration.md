@@ -79,8 +79,35 @@ not require or affect the other.
 |---|---|---|
 | `OPERATION_AWARE_ENABLED` | `false` | Enables `POST /v1/evaluate/operation-aware` and the four operation-aware readiness components. Disabled by default — with this unset or `false`, no operation-aware bundle is required, no operation-aware evaluator is initialized, and the route is not registered at all. |
 | `OPERATION_AWARE_POLICY_BUNDLE_PATH` | _(none)_ | Path to the JSON operation-aware `PolicyBundle` file. Required when `OPERATION_AWARE_ENABLED=true`; not required or validated otherwise. |
-| `OPERATION_PRODUCER_SUBJECT_IDS` | _(empty)_ | Comma-separated exact-match allowlist of authenticated subject IDs permitted to assert operation-producer-only context. Defaults to empty — an empty list trusts no producer; this is the safe default. |
-| `OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED` | `false` | Trusted-proxy producer-mTLS ingress mode (Phase 1B.2, [ADR-0009](https://github.com/basis-foundation/basis-architecture/blob/main/docs/adr/0009-trusted-producer-mtls-ingress-and-gateway-certificate-handoff.md)). When `true`, the gateway's internal certificate-header retrieval primitive (`src/basis_gateway/auth/producer_mtls_trusted_proxy.py`) looks for the private `X-BASIS-Producer-Client-Cert` header. Safe only behind the ADR-0009 NGINX → Unix-domain-socket ingress (`examples/producer-mtls/`) that unconditionally overwrites that header — enabling this setting does not itself make the header trustworthy. Disabled by default: an ordinary deployment observes no behavior change. Not wired to any live endpoint, `OperationProducerTrust`, or producer admission as of Phase 1B.2 — see [`docs/implementation/producer-mtls-phase-1b2.md`](implementation/producer-mtls-phase-1b2.md). |
+| `OPERATION_PRODUCER_SUBJECT_IDS` | _(empty)_ | Comma-separated exact-match allowlist of authenticated subject IDs permitted to assert operation-producer-only context. Defaults to empty — an empty list trusts no producer; this is the safe default. **Legacy/compatibility mechanism** — consulted only when `OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED` is `false` (the default); see [Two producer-trust mechanisms](#two-producer-trust-mechanisms) below. |
+| `OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED` | `false` | Trusted-proxy producer-mTLS ingress mode ([ADR-0009](https://github.com/basis-foundation/basis-architecture/blob/main/docs/adr/0009-trusted-producer-mtls-ingress-and-gateway-certificate-handoff.md)). When `true`, the gateway's internal certificate-header retrieval primitive (`src/basis_gateway/auth/producer_mtls_trusted_proxy.py`) looks for the private `X-BASIS-Producer-Client-Cert` header, and producer trust for `POST /v1/evaluate/operation-aware` is established **exclusively** through the mTLS certificate pipeline below — `OPERATION_PRODUCER_SUBJECT_IDS` is never consulted for a request received while this is `true` (no fallback). Safe only behind the ADR-0009 NGINX → Unix-domain-socket ingress (`examples/producer-mtls/`) that unconditionally overwrites that header — enabling this setting does not itself make the header trustworthy. Disabled by default: an ordinary deployment observes no behavior change. Wired into the live route as of Phase 1B.3 — see [`docs/implementation/producer-mtls-phase-1b3.md`](implementation/producer-mtls-phase-1b3.md). |
+| `OPERATION_PRODUCER_MTLS_ADMITTED_URIS` | `[]` (empty) | JSON array of exact producer workload identity strings (certificate URI SANs) admitted as trusted mTLS operation producers when `OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED=true`. Example: `["spiffe://example.test/basis/reference-producer-01"]`. Defaults to an empty array — an empty admission set trusts no mTLS producer; this is the safe default, and is a legitimate deployment configuration even with trusted-proxy mode enabled (it simply means no producer-owned context can be asserted yet). Matching is exact and case-sensitive; no wildcard, prefix, suffix, or case-insensitive matching exists, and no URI canonicalization is performed — every entry is preserved exactly as configured. A scalar string, malformed JSON, a JSON object, or a JSON array containing a non-string or empty-string entry are all rejected at startup. See [Phase 1B.3](implementation/producer-mtls-phase-1b3.md). |
+
+### Two producer-trust mechanisms
+
+`POST /v1/evaluate/operation-aware` recognizes exactly two, mutually exclusive producer-trust
+mechanisms, selected per request by `OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED`:
+
+**Legacy mode** (`OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED=false`, the default):
+`OPERATION_PRODUCER_SUBJECT_IDS` remains the compatibility/development/migration producer-trust
+mechanism — an exact, case-sensitive allowlist checked against the already bearer-authenticated
+caller's verified `subject_id`. This describes *authorization to act as an operation producer* for
+an already-authenticated subject; it does not independently authenticate a producer *workload*.
+
+**Trusted-proxy mTLS mode** (`OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED=true`): producer trust
+is established by an independently authenticated certificate:
+
+```text
+authenticated producer client certificate (validated by the trusted NGINX ingress)
+    → exactly one URI SAN (basis_gateway.auth.producer_mtls)
+    → OPERATION_PRODUCER_MTLS_ADMITTED_URIS exact admission
+    → OperationProducerTrust
+```
+
+This is a *workload* authentication fact, independent of and never substituted for the bearer
+subject that `basis-core` evaluates. Neither role membership, network position, the bearer token's
+issuer, nor any other subject attribute is producer workload authentication — only the certificate
+pipeline above establishes it in this mode.
 
 Required statements about this configuration group:
 
@@ -95,10 +122,19 @@ Required statements about this configuration group:
   four operation-aware stages fails.
 - The enabled route remains registered even when a later startup stage fails — a request to it
   then returns a governed `503`, never FastAPI's ordinary `404`.
-- Operation-producer identifier matching is exact and case-sensitive — no wildcard, prefix, or
-  case-insensitive matching exists.
-- Roles and the token issuer do not imply producer trust. Only exact `OPERATION_PRODUCER_SUBJECT_IDS`
-  membership does.
+- Both producer-trust mechanisms use exact, case-sensitive matching — no wildcard, prefix, or
+  case-insensitive matching exists in either.
+- Roles and the token issuer do not imply producer trust under either mechanism.
+- When trusted-proxy mTLS mode is enabled, a bearer subject's presence in
+  `OPERATION_PRODUCER_SUBJECT_IDS` has no effect on that request's producer-trust outcome — the two
+  mechanisms never combine or fall back into one another within a single request.
+- When trusted-proxy mTLS mode is enabled and a request reaches `basis-gateway` without the internal
+  `X-BASIS-Producer-Client-Cert` assertion, this is a fail-closed Layer-2 proxy/backend
+  trust-boundary failure (per `basis-architecture`'s `producer-mtls-proxy-trust-boundary.md` §11/§18)
+  — not an ordinary untrusted-producer outcome. The request is rejected before kernel evaluation, no
+  `OperationProducerTrust` is constructed, and there is no fallback to `OPERATION_PRODUCER_SUBJECT_IDS`
+  even when the bearer subject is itself allowlisted. See
+  [Phase 1B.3](implementation/producer-mtls-phase-1b3.md#missing-assertion-semantics-architecture-reconciled).
 
 ---
 

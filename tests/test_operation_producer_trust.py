@@ -227,3 +227,96 @@ def test_default_trusted_subject_ids_config_yields_no_trusted_caller() -> None:
 def test_operation_producer_trust_result_type_matches_dataclass() -> None:
     result = classify_operation_producer(_subject("adapter-1"), frozenset({"adapter-1"}))
     assert isinstance(result, OperationProducerTrust)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1B.3: additive OperationProducerTrust/OperationProducerTrustSource
+# ---------------------------------------------------------------------------
+# The legacy classify_operation_producer() behavior above is completely
+# unchanged by these additions -- every test above still passes unmodified
+# with the additive producer_workload_identity field defaulting to None.
+
+
+def test_legacy_classifier_never_populates_producer_workload_identity() -> None:
+    trusted = classify_operation_producer(_subject("adapter-1"), frozenset({"adapter-1"}))
+    untrusted = classify_operation_producer(_subject("human-1"), frozenset({"adapter-1"}))
+    assert trusted.producer_workload_identity is None
+    assert untrusted.producer_workload_identity is None
+
+
+def test_mtls_source_members_exist_and_are_distinct_from_legacy_members() -> None:
+    mtls_members = {
+        OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        OperationProducerTrustSource.MTLS_URI_SAN_NOT_ADMITTED,
+    }
+    legacy_members = {
+        OperationProducerTrustSource.CONFIGURED_SUBJECT_ID_ALLOWLIST,
+        OperationProducerTrustSource.NOT_CONFIGURED,
+        OperationProducerTrustSource.SUBJECT_ID_NOT_ALLOWED,
+    }
+    assert mtls_members.isdisjoint(legacy_members)
+    assert len(mtls_members) == 2
+    assert len(legacy_members) == 3
+
+
+def test_mtls_assertion_absent_source_no_longer_exists() -> None:
+    """Regression: MTLS_ASSERTION_ABSENT was removed per the merged
+    producer-mtls-proxy-trust-boundary.md §11/§18 -- a missing certificate
+    assertion is a Layer-2 fail-closed exception
+    (MissingProducerCertificateAssertionError), never a representable
+    OperationProducerTrustSource."""
+    assert not hasattr(OperationProducerTrustSource, "MTLS_ASSERTION_ABSENT")
+
+
+def test_operation_producer_trust_can_represent_mtls_trusted() -> None:
+    result = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        authorization_subject_id="service-maintenance-operator-01",
+        operation_producer_subject_id=None,
+        producer_workload_identity="spiffe://example.test/basis/reference-producer-01",
+    )
+    assert result.status is OperationProducerTrustStatus.TRUSTED
+    assert result.operation_producer_subject_id is None
+    assert result.producer_workload_identity == (
+        "spiffe://example.test/basis/reference-producer-01"
+    )
+    # Never conflated with the authorization subject.
+    assert result.producer_workload_identity != result.authorization_subject_id
+
+
+def test_operation_producer_trust_can_represent_mtls_untrusted() -> None:
+    result = OperationProducerTrust(
+        status=OperationProducerTrustStatus.UNTRUSTED,
+        source=OperationProducerTrustSource.MTLS_URI_SAN_NOT_ADMITTED,
+        authorization_subject_id="service-maintenance-operator-01",
+        operation_producer_subject_id=None,
+        producer_workload_identity="spiffe://example.test/basis/unadmitted-producer",
+    )
+    assert result.status is OperationProducerTrustStatus.UNTRUSTED
+    assert result.producer_workload_identity == "spiffe://example.test/basis/unadmitted-producer"
+
+
+def test_producer_workload_identity_default_is_none() -> None:
+    """Constructing an OperationProducerTrust without producer_workload_identity
+    (e.g. legacy-mechanism call sites written before Phase 1B.3) still works
+    -- the field defaults to None."""
+    result = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.CONFIGURED_SUBJECT_ID_ALLOWLIST,
+        authorization_subject_id="adapter-1",
+        operation_producer_subject_id="adapter-1",
+    )
+    assert result.producer_workload_identity is None
+
+
+def test_operation_producer_trust_with_mtls_fields_is_still_frozen() -> None:
+    result = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        authorization_subject_id="service-maintenance-operator-01",
+        operation_producer_subject_id=None,
+        producer_workload_identity="spiffe://example.test/basis/reference-producer-01",
+    )
+    with pytest.raises(AttributeError):
+        result.producer_workload_identity = "attacker-value"  # type: ignore[misc]

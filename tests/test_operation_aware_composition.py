@@ -986,3 +986,166 @@ def test_identity_mismatch_error_omits_roles_attributes_and_claims() -> None:
     message = str(exc_info.value)
     assert "super-secret-role" not in message
     assert "very-secret@example.com" not in message
+
+
+# ---------------------------------------------------------------------------
+# 6. Phase 1B.3: mechanism-aware identity-consistency invariant (mTLS trust)
+# ---------------------------------------------------------------------------
+
+_PRODUCER_URI = "spiffe://example.test/basis/reference-producer-01"
+_BEARER_SUBJECT = "service-maintenance-operator-01"
+
+
+def _mtls_trusted(subject_id: str = _BEARER_SUBJECT, producer_uri: str = _PRODUCER_URI):
+    return OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        authorization_subject_id=subject_id,
+        operation_producer_subject_id=None,
+        producer_workload_identity=producer_uri,
+    )
+
+
+@pytest.mark.parametrize("field_name", OPERATION_PRODUCER_ONLY_FIELDS)
+def test_mtls_trusted_producer_field_passes_through(field_name: str) -> None:
+    """The mTLS mechanism reuses the exact same producer-owned-context gate
+    as the legacy mechanism — this is a regression proof that the
+    mechanism-aware invariant addition did not create a second, divergent
+    composition path."""
+    payload = {"action": "read:ahu", field_name: PRODUCER_ONLY_FIELD_PAYLOADS[field_name]}
+    request = OperationAwareEvaluateRequest(**payload)
+
+    composed = _compose(
+        request,
+        subject=_subject(_BEARER_SUBJECT),
+        identity_context=_identity_context(_BEARER_SUBJECT),
+        producer_trust=_mtls_trusted(),
+    )
+
+    composed_value = getattr(composed, field_name)
+    request_value = getattr(request, field_name)
+    assert composed_value == request_value
+    assert composed.provenance[field_name] is ProvenanceClassification.TRUSTED_PRODUCER_ASSERTED
+
+
+def test_mtls_trust_producer_uri_never_becomes_authorization_subject_id() -> None:
+    """Required dual-identity proof at the composition boundary: the
+    admitted mTLS producer URI SAN and the bearer authorization subject are
+    deliberately different values, and the composed result never conflates
+    them."""
+    request = OperationAwareEvaluateRequest(action="read:ahu", operation_intent="read_only")
+    trust = _mtls_trusted(_BEARER_SUBJECT, _PRODUCER_URI)
+    assert _PRODUCER_URI != _BEARER_SUBJECT
+
+    composed = _compose(
+        request,
+        subject=_subject(_BEARER_SUBJECT),
+        identity_context=_identity_context(_BEARER_SUBJECT),
+        producer_trust=trust,
+    )
+
+    assert composed.authorization_subject.subject_id == _BEARER_SUBJECT
+    assert composed.operation_producer_trust.authorization_subject_id == _BEARER_SUBJECT
+    # The mTLS trust result never carries a bearer-subject-shaped producer id.
+    assert composed.operation_producer_trust.operation_producer_subject_id is None
+    # The producer workload identity is tracked in its own, distinct field.
+    assert composed.operation_producer_trust.producer_workload_identity == _PRODUCER_URI
+    # Never assigned into any subject-shaped field.
+    assert composed.operation_producer_trust.producer_workload_identity != (
+        composed.authorization_subject.subject_id
+    )
+
+
+def test_mtls_trusted_with_non_none_producer_subject_id_rejected() -> None:
+    """An mTLS-trusted result must never carry a bearer subject id as its
+    producer identity — that would be exactly the producer/subject
+    conflation ADR-0008 forbids."""
+    subject = _subject(_BEARER_SUBJECT)
+    identity_context = _identity_context(_BEARER_SUBJECT)
+    malformed_trust = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        authorization_subject_id=_BEARER_SUBJECT,
+        operation_producer_subject_id=_BEARER_SUBJECT,  # invalid for the mTLS mechanism
+        producer_workload_identity=_PRODUCER_URI,
+    )
+    request = OperationAwareEvaluateRequest(action="read:ahu")
+
+    with pytest.raises(CompositionInternalError):
+        _compose(
+            request,
+            subject=subject,
+            identity_context=identity_context,
+            producer_trust=malformed_trust,
+        )
+
+
+def test_mtls_trusted_without_producer_workload_identity_rejected() -> None:
+    """An mTLS-trusted result must always carry its derived URI SAN."""
+    subject = _subject(_BEARER_SUBJECT)
+    identity_context = _identity_context(_BEARER_SUBJECT)
+    malformed_trust = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN,
+        authorization_subject_id=_BEARER_SUBJECT,
+        operation_producer_subject_id=None,
+        producer_workload_identity=None,  # invalid: TRUSTED via mTLS but no URI SAN
+    )
+    request = OperationAwareEvaluateRequest(action="read:ahu")
+
+    with pytest.raises(CompositionInternalError):
+        _compose(
+            request,
+            subject=subject,
+            identity_context=identity_context,
+            producer_trust=malformed_trust,
+        )
+
+
+def test_trusted_with_unrecognized_source_rejected() -> None:
+    """A TRUSTED result whose source is neither the legacy nor the mTLS
+    mechanism is a gateway-internal programming error, not a silently
+    accepted third case."""
+    subject = _subject(_BEARER_SUBJECT)
+    identity_context = _identity_context(_BEARER_SUBJECT)
+    malformed_trust = OperationProducerTrust(
+        status=OperationProducerTrustStatus.TRUSTED,
+        source=OperationProducerTrustSource.MTLS_URI_SAN_NOT_ADMITTED,  # never TRUSTED in practice
+        authorization_subject_id=_BEARER_SUBJECT,
+        operation_producer_subject_id=None,
+        producer_workload_identity=_PRODUCER_URI,
+    )
+    request = OperationAwareEvaluateRequest(action="read:ahu")
+
+    with pytest.raises(CompositionInternalError):
+        _compose(
+            request,
+            subject=subject,
+            identity_context=identity_context,
+            producer_trust=malformed_trust,
+        )
+
+
+def test_mtls_not_admitted_untrusted_caller_can_still_compose_bare_request() -> None:
+    """An unadmitted mTLS producer proceeds as an ordinary caller for a
+    request with no producer-only fields — the derived URI SAN is retained
+    on the trust result for diagnostics, but does not itself block ordinary
+    evaluation."""
+    trust = OperationProducerTrust(
+        status=OperationProducerTrustStatus.UNTRUSTED,
+        source=OperationProducerTrustSource.MTLS_URI_SAN_NOT_ADMITTED,
+        authorization_subject_id=_BEARER_SUBJECT,
+        operation_producer_subject_id=None,
+        producer_workload_identity=_PRODUCER_URI,
+    )
+    request = OperationAwareEvaluateRequest(action="read:ahu")
+
+    composed = _compose(
+        request,
+        subject=_subject(_BEARER_SUBJECT),
+        identity_context=_identity_context(_BEARER_SUBJECT),
+        producer_trust=trust,
+    )
+    assert composed.action == "read:ahu"
+    assert composed.operation_producer_trust.status is OperationProducerTrustStatus.UNTRUSTED
+    assert composed.operation_producer_trust.producer_workload_identity == _PRODUCER_URI

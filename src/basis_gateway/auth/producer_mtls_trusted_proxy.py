@@ -23,10 +23,23 @@ What this module is not
 ------------------------
 This module does **not** perform X.509 parsing, URI SAN derivation, or
 producer admission (Phase 1B.1 owns all of that — see
-``basis_gateway.auth.producer_mtls``). It does **not** perform
-``OperationProducerTrust`` classification and is **not** wired to any live
-HTTP route in this PR. It does **not** validate that the deployment is
-actually running behind the ADR-0009 NGINX ingress — that is a topology fact
+``basis_gateway.auth.producer_mtls``). It does **not** itself perform
+``OperationProducerTrust`` classification and does **not** decide whether a
+missing assertion is fatal — Phase 1B.3 (``auth/operation_producer_mtls.py``)
+composes this module's retrieval primitive with Phase 1B.1's pipeline to
+build a live classification, and is the sole caller reachable from
+``POST /v1/evaluate/operation-aware``; this module's own function signature
+is unchanged since Phase 1B.2 and still does not accept or return an
+``OperationProducerTrust``. This module's retrieval primitive still returns
+``None`` for absence — it is a low-level shape/retrieval primitive whose
+only responsibility is to report *whether an internal assertion was
+present*; Phase 1B.3's live trusted-proxy resolver is the layer that treats
+that absence as a fail-closed Layer-2 trust-boundary failure (see
+``basis_gateway.auth.operation_producer_mtls.MissingProducerCertificateAssertionError``)
+when live trusted-proxy mode is actually in effect for a request — a policy
+decision this module deliberately does not make, since it has no visibility
+into endpoint-level semantics. It does **not** validate
+that the deployment is actually running behind the ADR-0009 NGINX ingress — that is a topology fact
 this module cannot observe from within the ASGI application; it only
 prevents an *ordinary* caller-controlled header from being treated as a
 producer certificate assertion when trusted-proxy mode is enabled, per the
@@ -41,12 +54,19 @@ Trust-boundary invariants this module enforces
 - When trusted-proxy mode is disabled, the header is never inspected at
   all — no lookup, no parsing trigger, no new behavior for ordinary TCP
   deployments.
-- When trusted-proxy mode is enabled and the header is absent, no producer
-  certificate assertion exists for this request. This does **not** mean the
-  request is rejected — per ADR-0009, it may continue as an ordinary
-  bearer-authenticated caller, subject to the existing rejection of
-  producer-only context from an untrusted producer. This module does not
-  make that endpoint-level decision.
+- When trusted-proxy mode is enabled and the header is absent, this
+  function returns ``None`` — no producer certificate assertion exists for
+  this request, as far as this retrieval primitive is concerned. This
+  function does **not** itself reject the request: whether that absence is
+  fatal is an endpoint-level, live trusted-proxy-mode decision this module
+  does not make. As of Phase 1B.3, the live resolver that calls this
+  function (``basis_gateway.auth.operation_producer_mtls``) treats a
+  ``None`` return as a fail-closed Layer-2 trust-boundary failure — it
+  raises ``MissingProducerCertificateAssertionError`` rather than
+  proceeding as an ordinary bearer-only caller — per the merged
+  ``producer-mtls-proxy-trust-boundary.md`` §11/§18. This module's own
+  return value and behavior are unchanged from Phase 1B.2; only the live
+  caller's interpretation of ``None`` changed in Phase 1B.3.
 - When trusted-proxy mode is enabled and the header appears more than once
   (case-insensitively by header name), the assertion is malformed and
   retrieval fails closed — this module never applies first-occurrence-wins,
@@ -164,9 +184,12 @@ def retrieve_trusted_producer_certificate_assertion(
         ``None`` when trusted-proxy mode is disabled (the header, if
         present, is never inspected — see this module's docstring), or when
         trusted-proxy mode is enabled but the header is absent (no producer
-        certificate assertion exists for this request; this does not by
-        itself reject the request — see this module's docstring). Otherwise
-        the single header value, unchanged and still percent-encoded.
+        certificate assertion exists for this request, as far as this
+        retrieval primitive is concerned; this function does not by itself
+        reject the request — see this module's docstring for how Phase
+        1B.3's live resolver treats that ``None`` as fail-closed when
+        trusted-proxy mode is actually in effect). Otherwise the single
+        header value, unchanged and still percent-encoded.
 
     Raises:
         DuplicateProducerCertificateAssertionError: trusted-proxy mode is
