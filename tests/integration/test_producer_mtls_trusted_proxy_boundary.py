@@ -396,20 +396,35 @@ class TestBackendIsolation:
         self, mtls_fixtures: MTLSFixtureSet, topology: TrustedProxyTopology
     ) -> None:
         # A direct HTTPS connection to nginx's own listener with a trusted
-        # client certificate succeeds (proving the topology is up)...
+        # client certificate succeeds (proving the topology is up) and
+        # reaches the Unix-socket backend exactly once...
         with _client(mtls_fixtures, "client_one_uri_san") as client:
             response = client.post(
                 f"https://127.0.0.1:{topology.port}/v1/evaluate/operation-aware",
                 headers={"Authorization": _SYNTHETIC_BEARER_VALUE},
             )
         assert response.status_code == 200
+        assert topology.backend.read_request_log() == ["POST /v1/evaluate/operation-aware"]
 
         # ...and there is no parallel plaintext-HTTP route to the backend
-        # process itself: attempting plain HTTP against nginx's own (TLS
-        # only) port fails at the transport level, and no other port is
-        # published by this topology for the backend.
-        with pytest.raises(httpx.TransportError):
-            httpx.get(f"http://127.0.0.1:{topology.port}/v1/evaluate/operation-aware", timeout=2)
+        # process itself: a plaintext HTTP attempt against the TLS-only
+        # producer ingress is rejected by nginx and is never forwarded to
+        # the Unix-socket backend. NGINX may manifest that rejection either
+        # as a transport-level failure (the connection never completes a
+        # usable HTTP exchange, surfaced to httpx as
+        # ``httpx.TransportError``) or as an HTTP-level error response --
+        # both are valid rejections; only the backend's request log, not
+        # one specific client-visible failure mode, is the actual proof
+        # that no other port/path reaches the backend.
+        _assert_rejected_by_nginx_mtls_boundary(
+            lambda: httpx.get(
+                f"http://127.0.0.1:{topology.port}/v1/evaluate/operation-aware", timeout=2
+            )
+        )
+
+        # The plaintext attempt must not have added a second entry -- the
+        # log is still exactly the one legitimate request from above.
+        assert topology.backend.read_request_log() == ["POST /v1/evaluate/operation-aware"]
 
 
 def test_rendering_helper_rejects_unknown_placeholder(tmp_path: Path) -> None:
