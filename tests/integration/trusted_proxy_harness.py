@@ -144,11 +144,15 @@ class TrustedProxyBackend:
 
     Phase 1B.3 (``tests/integration/test_producer_mtls_live_gateway.py``)
     reuses this exact class, unmodified in behavior for its default
-    arguments, to instead launch the real ``basis_gateway.main:app`` by
-    passing ``app_module="basis_gateway.main:app"`` and the additional
-    environment variables that application's own ``GatewayConfig`` requires
-    -- via *extra_env*, additive on top of ``BASIS_TEST_REQUEST_LOG_PATH``
-    and ``PYTHONPATH``, never replacing them.
+    arguments, to instead launch a thin test-only ASGI passthrough
+    (``app_module="live_gateway_request_log_app:app"``, see
+    ``tests/integration/live_gateway_request_log_app.py``) that records the
+    same method+path request log this class's default ``trusted_proxy_app``
+    does, then delegates unchanged to the real ``basis_gateway.main:app`` --
+    which has, and must have, no such logging facility of its own. Phase
+    1B.3 also passes the additional environment variables that application's
+    own ``GatewayConfig`` requires via *extra_env*, additive on top of
+    ``BASIS_TEST_REQUEST_LOG_PATH`` and ``PYTHONPATH``, never replacing them.
     """
 
     def __init__(
@@ -175,10 +179,19 @@ class TrustedProxyBackend:
         env = dict(os.environ)
         env["BASIS_TEST_REQUEST_LOG_PATH"] = str(self._request_log_path)
         existing_pythonpath = env.get("PYTHONPATH", "")
+        # Always include both the real package's ``src`` directory and this
+        # harness's own directory (``tests/integration``) on PYTHONPATH,
+        # regardless of *cwd* -- so an *app_module* string can name either a
+        # ``src`` package (e.g. ``basis_gateway.main:app``) or a test-only
+        # harness module colocated with this file (e.g. Phase 1B.3's
+        # ``live_gateway_request_log_app:app``) without the caller having to
+        # choose *cwd* to make one or the other importable.
         repo_src = str(_REPO_SRC)
-        env["PYTHONPATH"] = (
-            f"{repo_src}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else repo_src
-        )
+        harness_dir = str(_HARNESS_DIR)
+        path_entries = [repo_src, harness_dir]
+        if existing_pythonpath:
+            path_entries.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(path_entries)
         env.update(self._extra_env)
 
         cmd = [

@@ -10,6 +10,17 @@ stand-in (``trusted_proxy_app.py``). It reuses the Phase 1B.2 harness
 subprocess + Unix-domain-socket topology; the only structural difference is
 which ASGI application Uvicorn serves behind that topology.
 
+Uvicorn actually serves ``live_gateway_request_log_app:app``
+(``tests/integration/live_gateway_request_log_app.py``), a thin test-only
+ASGI passthrough that records only method+path to the same
+``BASIS_TEST_REQUEST_LOG_PATH`` synthetic request log Phase 1B.2's stand-in
+writes, then hands the request to the real, unmodified
+``basis_gateway.main:app`` -- because the real gateway application has, and
+must have, no such instrumentation of its own. Every authentication, mTLS
+producer-trust, and kernel-evaluation code path exercised by this suite runs
+entirely inside that real application; the wrapper is not part of, and does
+not influence, any of it.
+
 ``AUTH_MODE=basis_local_token`` is used throughout so this suite requires no
 external OIDC issuer or live JWKS endpoint -- the bearer token is a locally
 signed, locally verified RS256 BASIS-local identity token, mirroring the
@@ -204,7 +215,13 @@ def topology(
     backend = TrustedProxyBackend(
         paths.backend_socket_path,
         paths.request_log_path,
-        app_module="basis_gateway.main:app",
+        # A test-only ASGI wrapper (tests/integration/live_gateway_request_log_app.py),
+        # not the bare ``basis_gateway.main:app`` -- it records only
+        # method+path for the synthetic request log this suite's positive
+        # test reads back, then delegates to the real, unmodified gateway
+        # application. The real application itself has no equivalent
+        # facility and must not gain one for this test's sake.
+        app_module="live_gateway_request_log_app:app",
         extra_env=extra_env,
         cwd=_REPO_ROOT,
     )
@@ -236,6 +253,15 @@ def topology(
     finally:
         ingress.stop()
         backend.stop()
+
+
+@pytest.fixture(autouse=True)
+def _reset_request_log(topology: LiveGatewayTopology) -> None:
+    """Mirrors Phase 1B.2's identical fixture (test_producer_mtls_trusted_proxy_boundary.py):
+    every test gets a clean backend-request log, so ``TestPositivePath``'s
+    request-log assertion is never polluted by a request an earlier test in
+    this module sent to the shared, module-scoped topology."""
+    topology.paths.request_log_path.write_text("", encoding="utf-8")
 
 
 def _tls_client(mtls_fixtures: MTLSFixtureSet, client_cert: str | None) -> httpx.Client:
