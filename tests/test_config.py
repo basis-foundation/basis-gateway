@@ -117,3 +117,36 @@ def test_env_audit_fail_closed_yes(monkeypatch):
     monkeypatch.setenv("AUDIT_FAIL_CLOSED", "yes")
     config = GatewayConfig()
     assert config.audit_fail_closed is True
+
+
+# ---------------------------------------------------------------------------
+# Trusted-proxy producer-mTLS ingress mode (Phase 1B.2)
+# ---------------------------------------------------------------------------
+
+
+def test_trusted_proxy_mode_defaults_off():
+    config = GatewayConfig()
+    assert config.operation_producer_mtls_trusted_proxy_enabled is False
+
+
+def test_trusted_proxy_mode_explicit_enablement(monkeypatch):
+    monkeypatch.setenv("OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED", "true")
+    config = GatewayConfig()
+    assert config.operation_producer_mtls_trusted_proxy_enabled is True
+
+
+def test_trusted_proxy_mode_explicit_disablement(monkeypatch):
+    monkeypatch.setenv("OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED", "false")
+    config = GatewayConfig()
+    assert config.operation_producer_mtls_trusted_proxy_enabled is False
+
+
+def test_trusted_proxy_mode_absent_leaves_existing_config_valid():
+    """A deployment that never sets this variable observes no behavior
+    change: every other field still loads with its own pre-existing
+    defaults."""
+    config = GatewayConfig()
+    assert config.operation_producer_mtls_trusted_proxy_enabled is False
+    assert config.auth_mode.value == "oidc"
+    assert config.operation_aware_enabled is False
+    assert config.operation_producer_subject_ids == frozenset()

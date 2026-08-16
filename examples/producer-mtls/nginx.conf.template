@@ -1,0 +1,122 @@
+# Reference trusted mTLS ingress configuration for the bounded
+# operation-producer implementation (basis-architecture ADR-0008, ADR-0009,
+# docs/architecture/producer-mtls-proxy-trust-boundary.md).
+#
+# This is a REFERENCE configuration for the bounded producer slice, not a
+# general-purpose ingress. It exposes exactly one route
+# (POST /v1/evaluate/operation-aware) and performs TLS-level producer
+# certificate authentication only -- no admission decision, no BASIS role
+# assignment, no policy evaluation, no basis-core call, and no proxying of
+# any other gateway route (health, ready, console, browser traffic, or any
+# other endpoint) is performed by this configuration.
+#
+# This file is a template: every @@TOKEN@@ placeholder below is substituted
+# by the test harness (tests/integration/trusted_proxy_harness.py) or by a
+# deployment's own rendering step before nginx loads it. Placeholder tokens
+# were chosen (rather than "${VAR}" or "{VAR}") specifically because nginx
+# configuration syntax itself uses "$" extensively for its own variables
+# (e.g. $ssl_client_escaped_cert, $host) and "{" / "}" for block
+# delimiters -- an ordinary templating syntax would collide with nginx's own
+# syntax.
+#
+# Trust boundary this file implements (see the architecture document for
+# the full specification):
+#   - ssl_verify_client on;                 -- require a client certificate
+#   - ssl_client_certificate <producer CA>; -- validate against the
+#                                               deployment-configured
+#                                               producer trust anchor
+#   - proxy_set_header X-BASIS-Producer-Client-Cert $ssl_client_escaped_cert;
+#     unconditionally overwrites any inbound value with the same header
+#     name -- this is nginx's standard "replace, never append" semantics
+#     for proxy_set_header, and is the direct configuration-level answer to
+#     the Phase 1A spike's header-spoofing finding.
+#   - Authorization is forwarded unchanged: no directive in this file
+#     touches it.
+#   - the backend is reached only over a Unix domain socket -- no TCP
+#     upstream exists in this configuration.
+
+daemon off;
+pid @@PID_PATH@@;
+error_log @@ERROR_LOG_PATH@@ warn;
+worker_processes 1;
+
+events {
+    worker_connections 64;
+}
+
+http {
+    access_log @@ACCESS_LOG_PATH@@;
+
+    client_body_temp_path @@CLIENT_BODY_TEMP_PATH@@;
+    proxy_temp_path @@PROXY_TEMP_PATH@@;
+
+    # A percent-encoded producer leaf certificate is comfortably covered by
+    # basis-gateway's own 16 KiB assertion bound
+    # (basis_gateway.auth.producer_mtls_trusted_proxy.MAX_ASSERTION_SIZE_BYTES);
+    # this ingress-side bound is set generously above that so the ingress
+    # never truncates a value the gateway would otherwise still accept.
+    large_client_header_buffers 4 32k;
+
+    # Never log the Authorization header value for this listener
+    # (producer-mtls-proxy-trust-boundary.md §19 item 19). The default
+    # "combined" log format does not capture arbitrary request headers, so
+    # no additional suppression directive is required; this comment
+    # documents that fact rather than silently relying on it.
+
+    upstream basis_gateway_producer_backend {
+        server unix:@@BACKEND_SOCKET_PATH@@;
+    }
+
+    server {
+        listen @@LISTEN_PORT@@ ssl;
+        server_name _;
+
+        ssl_certificate @@SERVER_CERT_PATH@@;
+        ssl_certificate_key @@SERVER_KEY_PATH@@;
+
+        # Producer client-certificate authentication: require and validate
+        # against the deployment-configured producer trust anchor. This is
+        # the ONLY TLS validation this reference listener performs -- no
+        # producer admission, no URI SAN derivation, and no BASIS role
+        # assignment happen here; all of that remains gateway-owned
+        # (ADR-0008, ADR-0009 §12-§13).
+        ssl_client_certificate @@PRODUCER_CA_BUNDLE_PATH@@;
+        ssl_verify_client on;
+
+        # Only the bounded operation-aware producer route is exposed
+        # through this dedicated listener (architecture document §8, §20).
+        # This is not a general-purpose gateway ingress: /health, /ready,
+        # /v1/evaluate, console traffic, and every other route are
+        # unreachable through this server block.
+        location = /v1/evaluate/operation-aware {
+            limit_except POST {
+                deny all;
+            }
+
+            # Unconditionally overwrite any inbound copy of this header
+            # with the TLS-authenticated leaf certificate from THIS
+            # connection. proxy_set_header replaces the outbound header
+            # value; it never appends to, or preserves alongside, a
+            # client-supplied value with the same name. There is no
+            # request that reaches the backend with an attacker-controlled
+            # value in this header.
+            proxy_set_header X-BASIS-Producer-Client-Cert $ssl_client_escaped_cert;
+
+            # Authorization is intentionally NOT touched by any directive
+            # here -- nginx's default proxy_pass behavior already forwards
+            # client request headers unless a directive explicitly
+            # overrides one, and none does for Authorization in this
+            # configuration (architecture document §14).
+            proxy_set_header Host $host;
+
+            proxy_pass http://basis_gateway_producer_backend;
+        }
+
+        # Every other path is rejected directly by nginx and never reaches
+        # the Unix-socket backend -- this dedicated producer-mTLS listener
+        # is not a general-purpose ingress (architecture document §20).
+        location / {
+            return 404;
+        }
+    }
+}
