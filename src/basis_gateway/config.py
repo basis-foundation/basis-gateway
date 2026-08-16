@@ -6,6 +6,7 @@ Missing required variables abort startup with a clear error message.
 
 from __future__ import annotations
 
+import json
 import logging
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -160,12 +161,44 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
     # parsing, and no new header-based authentication path exists for normal
     # TCP deployments.
     #
-    # This setting is NOT wired to any live endpoint, to
-    # OperationProducerTrust, or to producer admission in this PR — that
-    # integration is Phase 1B.3's scope. Enabling it today has no effect on
-    # POST /v1/evaluate/operation-aware or any other route.
+    # As of Phase 1B.3 (docs/implementation/producer-mtls-phase-1b3.md), this
+    # setting IS wired into the live POST /v1/evaluate/operation-aware route:
+    # when True, producer trust for that route is established exclusively via
+    # the ADR-0009 certificate pipeline (basis_gateway.auth.operation_producer_mtls),
+    # checked against operation_producer_mtls_admitted_uris below. The legacy
+    # OPERATION_PRODUCER_SUBJECT_IDS allowlist is never consulted for a
+    # request that arrives while this setting is True — there is no fallback
+    # from the mTLS path to the legacy path within a single request.
     operation_producer_mtls_trusted_proxy_enabled: bool = Field(
         default=False, alias="OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED"
+    )
+
+    # Admitted mTLS producer URI-SAN identities (Phase 1B.3 — ADR-0008 "Exact
+    # admission matching", basis-architecture
+    # docs/architecture/producer-mtls-proxy-trust-boundary.md §13). The
+    # deployment-controlled set of producer workload identities (URI SANs,
+    # taken verbatim from a validated producer leaf certificate — see
+    # src/basis_gateway/auth/producer_mtls.py) permitted to assert
+    # producer-owned request context when operation_producer_mtls_trusted_proxy_enabled
+    # is True. Matching is exact and case-sensitive; there is no wildcard,
+    # prefix, suffix, substring, or case-insensitive matching, exactly as
+    # OPERATION_PRODUCER_SUBJECT_IDS already establishes for the legacy
+    # bearer-subject allowlist. Default is empty: with no configuration, no
+    # mTLS producer is ever admitted — the safe default. This is a distinct
+    # trust mechanism from OPERATION_PRODUCER_SUBJECT_IDS; the two allowlists
+    # are never merged, compared, or used to substitute for one another.
+    #
+    # Represented as a JSON array of exact strings — deliberately NOT the
+    # comma-separated convention OPERATION_PRODUCER_SUBJECT_IDS uses, because
+    # a URI SAN may itself validly contain a comma-adjacent character in a
+    # query string or path segment, and because this repository already uses
+    # JSON-object encoding for another multiline/structured environment value
+    # (BASIS_LOCAL_TOKEN_PUBLIC_KEYS_JSON) — a JSON array is the same-family,
+    # unambiguous choice for a list of exact strings. See
+    # parse_operation_producer_mtls_admitted_uris below for the exact parsing
+    # rules (no identity normalization of any kind is performed).
+    operation_producer_mtls_admitted_uris: Annotated[frozenset[str], NoDecode] = Field(
+        default_factory=frozenset, alias="OPERATION_PRODUCER_MTLS_ADMITTED_URIS"
     )
 
     @field_validator("operation_producer_subject_ids", mode="before")
@@ -190,6 +223,87 @@ class GatewayConfig(BaseSettings):  # type: ignore[misc]
             return frozenset(str(part).strip() for part in v if str(part).strip())
         raise TypeError(
             "operation_producer_subject_ids must be a comma-separated string or an "
+            f"iterable of strings, got {type(v)!r}"
+        )
+
+    @field_validator("operation_producer_mtls_admitted_uris", mode="before")
+    @classmethod
+    def parse_operation_producer_mtls_admitted_uris(cls, v: Any) -> frozenset[str]:
+        """Parse ``OPERATION_PRODUCER_MTLS_ADMITTED_URIS``: a JSON array of
+        exact producer identity strings.
+
+        Deliberately strict, unlike ``operation_producer_subject_ids``'s
+        comma-separated/whitespace-trimming parser — the two allowlists are
+        different trust mechanisms (ADR-0008) and this parser is not made to
+        resemble the other's leniency merely for consistency:
+
+        - a JSON array of strings loads exactly, entry-for-entry, with no
+          whitespace trimming, no case folding, and no other rewriting —
+          every entry is preserved byte-for-byte as the deployment wrote it;
+        - duplicate entries collapse via ``frozenset`` construction only,
+          never through string normalization;
+        - an entirely absent setting (``None``) yields an empty set — the
+          safe default (no mTLS producer is ever admitted);
+        - a bare (scalar) string that is not valid JSON, or that is valid
+          JSON but not a JSON array (an object, a number, a JSON string
+          literal, ...), is rejected;
+        - a JSON array containing a non-string entry is rejected;
+        - a JSON array containing an empty-string entry is rejected (an
+          empty string can never be a meaningful URI SAN identity);
+        - an already-iterable collection (``frozenset``/``set``/``list``/
+          ``tuple`` — the programmatic-construction shape used by tests) is
+          accepted directly under the same per-entry rules (every entry must
+          be a non-empty ``str``; nothing is stripped or case-folded).
+
+        No wildcard expansion, no prefix/suffix treatment, and no URI
+        canonicalization occur anywhere in this function — see ADR-0008's
+        "Certificate identity profile" and "Exact admission matching".
+        """
+        if v is None:
+            return frozenset()
+        if isinstance(v, (frozenset, set, list, tuple)):
+            entries: list[str] = []
+            for item in v:
+                if not isinstance(item, str):
+                    raise TypeError(
+                        "operation_producer_mtls_admitted_uris entries must all be "
+                        f"strings, got {type(item)!r}"
+                    )
+                if item == "":
+                    raise ValueError(
+                        "operation_producer_mtls_admitted_uris entries must not be empty strings"
+                    )
+                entries.append(item)
+            return frozenset(entries)
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "OPERATION_PRODUCER_MTLS_ADMITTED_URIS must be valid JSON — a JSON "
+                    f"array of exact producer identity strings: {exc}"
+                ) from exc
+            if not isinstance(parsed, list):
+                raise ValueError(
+                    "OPERATION_PRODUCER_MTLS_ADMITTED_URIS must be a JSON array of "
+                    f"strings, not {type(parsed).__name__} — a scalar string, a JSON "
+                    "object, or any other JSON shape is rejected"
+                )
+            parsed_entries: list[str] = []
+            for item in parsed:
+                if not isinstance(item, str):
+                    raise ValueError(
+                        "OPERATION_PRODUCER_MTLS_ADMITTED_URIS entries must all be "
+                        f"JSON strings, got {type(item).__name__}"
+                    )
+                if item == "":
+                    raise ValueError(
+                        "OPERATION_PRODUCER_MTLS_ADMITTED_URIS entries must not be empty strings"
+                    )
+                parsed_entries.append(item)
+            return frozenset(parsed_entries)
+        raise TypeError(
+            "operation_producer_mtls_admitted_uris must be a JSON array string or an "
             f"iterable of strings, got {type(v)!r}"
         )
 

@@ -21,12 +21,15 @@ trustworthy. It operates entirely on an already-supplied certificate
 assertion *value* (the accepted ADR-0009 internal transport representation:
 a URL-escaped PEM leaf certificate, corresponding to what a trusted NGINX
 ingress would derive from ``$ssl_client_escaped_cert``). Establishing that a
-given assertion value actually originated from a trusted ingress — the
-``X-BASIS-Producer-Client-Cert`` header, the protected Unix-domain-socket
-transport, and the ``OperationProducerTrust`` integration — is explicitly
-deferred to a later Phase 1B PR (see
-``docs/implementation/producer-mtls-phase-1b1.md``). This module is not
-reachable from any live HTTP request path today.
+given assertion value actually originated from a trusted ingress is Phase
+1B.2's responsibility (``auth/producer_mtls_trusted_proxy.py``); composing
+that with this module's pipeline into a live ``OperationProducerTrust`` is
+Phase 1B.3's responsibility (``auth/operation_producer_mtls.py``, see
+``docs/implementation/producer-mtls-phase-1b3.md``). As of Phase 1B.3, this
+module's functions ARE reachable from the live
+``POST /v1/evaluate/operation-aware`` route, indirectly, through that
+orchestration module — never directly from ``api/routes.py``, and never by
+accepting a ``Request`` themselves.
 
 Producer workload identity vs. authorization subject
 ------------------------------------------------------

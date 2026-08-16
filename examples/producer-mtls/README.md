@@ -1,4 +1,4 @@
-# Producer mTLS Reference Ingress (Phase 1B.2)
+# Producer mTLS Reference Ingress (Phase 1B.2, live-wired as of Phase 1B.3)
 
 This directory holds the one reference NGINX configuration for the bounded
 operation-producer mTLS ingress topology defined by
@@ -7,8 +7,11 @@ and
 [`producer-mtls-proxy-trust-boundary.md`](https://github.com/basis-foundation/basis-architecture/blob/main/docs/architecture/producer-mtls-proxy-trust-boundary.md).
 
 `nginx.conf.template` is the **single source configuration** exercised by
-`tests/integration/test_producer_mtls_trusted_proxy_boundary.py` (via
-`tests/integration/trusted_proxy_harness.py`) — there is deliberately no
+both `tests/integration/test_producer_mtls_trusted_proxy_boundary.py`
+(Phase 1B.2's boundary-only proof, against a minimal test backend) and
+`tests/integration/test_producer_mtls_live_gateway.py` (Phase 1B.3's
+live-gateway proof, against the real `basis_gateway.main:app`) — both via
+`tests/integration/trusted_proxy_harness.py` — there is deliberately no
 separate "documentation copy" of this file that could drift from what the
 integration tests actually run.
 
@@ -42,9 +45,13 @@ returns `404` directly from nginx and never reaches the Unix-socket backend.
   entirely inside `basis-gateway`
   (`src/basis_gateway/auth/producer_mtls.py`,
   `src/basis_gateway/auth/producer_mtls_trusted_proxy.py`).
-- Not wired to any live `basis-gateway` endpoint as of Phase 1B.2 — see
-  `docs/implementation/producer-mtls-phase-1b2.md` for exactly what is and
-  is not implemented.
+- As of Phase 1B.2, this topology was not wired to any live `basis-gateway`
+  endpoint. As of Phase 1B.3, it is: `test_producer_mtls_live_gateway.py`
+  drives the real `POST /v1/evaluate/operation-aware` route behind exactly
+  this configuration — see `docs/implementation/producer-mtls-phase-1b3.md`
+  for exactly what is and is not implemented at the gateway side, and
+  `docs/implementation/producer-mtls-phase-1b2.md` for this topology's own
+  original scope.
 - Not a `basis-deploy` packaging artifact. No such repository exists.
 
 ## Rendering

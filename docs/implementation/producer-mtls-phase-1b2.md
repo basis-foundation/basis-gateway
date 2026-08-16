@@ -1,7 +1,15 @@
 # Producer mTLS: Phase 1B.2 — Trusted Producer mTLS Ingress Boundary
 
-**Status: trust-boundary/topology slice only. Not wired to the live operation-aware endpoint. Not
-producer mTLS end to end.**
+**Status: trust-boundary/topology slice only, as originally shipped. Not wired to the live
+operation-aware endpoint by this PR. Not producer mTLS end to end by itself.**
+
+**Forward reference:** [Phase 1B.3](producer-mtls-phase-1b3.md) wires this PR's
+`retrieve_trusted_producer_certificate_assertion()` and Phase 1B.1's certificate-identity pipeline
+into the live `POST /v1/evaluate/operation-aware` route, completing the gateway side of Phase 1B.
+Everything described below as "Still not implemented" that concerns live wiring, `OperationProducerTrust`
+integration, and dual mTLS-producer-plus-bearer-subject conformance is implemented there — this
+document is retained unmodified below as the accurate historical record of what Phase 1B.2 itself
+shipped.
 
 This document describes exactly what Phase 1B.2 implements, using the architectural authority of
 [ADR-0008](https://github.com/basis-foundation/basis-architecture/blob/main/docs/adr/0008-producer-workload-authentication-and-admission.md)
@@ -27,9 +35,17 @@ architecture document. It builds directly on
   `retrieve_trusted_producer_certificate_assertion()`:
   - when trusted-proxy mode is disabled, the private header is never inspected — no lookup, no
     parsing trigger, no behavior change for ordinary TCP deployments;
-  - when enabled and the header is absent, returns `None` (no producer certificate assertion for
-    this request — this does not by itself reject the request; that endpoint-level decision remains
-    out of scope, see **Still not implemented** below);
+  - when enabled and the header is absent, returns `None` — a low-level shape/retrieval fact only;
+    this function does not by itself reject the request (that endpoint-level decision was out of
+    scope for Phase 1B.2, see **Still not implemented** below). **As of Phase 1B.3, that
+    endpoint-level decision has been made**: the live, mode-aware resolver
+    (`src/basis_gateway/auth/operation_producer_mtls.py`) treats a `None` return from this
+    primitive as a fail-closed Layer-2 trust-boundary failure when trusted-proxy mode is actually
+    enabled for the live request — it raises `MissingProducerCertificateAssertionError` rather than
+    proceeding as an ordinary bearer-only caller, per the merged
+    `producer-mtls-proxy-trust-boundary.md` §11/§18. This retrieval primitive's own return value and
+    behavior are unchanged; only the live caller's interpretation of `None` changed in Phase 1B.3.
+    See [Phase 1B.3](producer-mtls-phase-1b3.md#missing-assertion-semantics-architecture-reconciled);
   - when enabled and the header appears more than once (case-insensitive by header name, checked
     against the raw ASGI header list so a non-lowercased occurrence cannot defeat detection), raises
     `DuplicateProducerCertificateAssertionError` — fails closed;

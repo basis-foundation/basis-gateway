@@ -79,5 +79,23 @@ jobs:
         # executes for real in this job.
         run: pytest tests/integration/test_producer_mtls_trusted_proxy_boundary.py -v
 
+      - name: Producer mTLS live-gateway suite (real NGINX -> real basis-gateway, mandatory)
+        # Runs tests/integration/test_producer_mtls_live_gateway.py -- Phase
+        # 1B.3's real-NGINX proof, distinct from the Phase 1B.2 boundary
+        # suite above: this one drives the REAL basis_gateway.main:app
+        # (AUTH_MODE=basis_local_token, no external OIDC issuer required)
+        # behind the same real nginx + Unix-domain-socket topology, proving
+        # producer mTLS is genuinely wired into the live
+        # POST /v1/evaluate/operation-aware path end to end (admitted
+        # producer + distinct bearer subject reaches real kernel evaluation;
+        # unadmitted/malformed/zero-or-multi-SAN certificates are rejected
+        # before kernel evaluation; a spoofed private header is overwritten
+        # by nginx). Run on its own, ahead of the full suite below, for the
+        # same attributability reason as the Phase 1B.2 step above. With
+        # nginx confirmed present above, this suite's own
+        # skipif(nginx unavailable) guard never triggers here -- it always
+        # executes for real in this job.
+        run: pytest tests/integration/test_producer_mtls_live_gateway.py -v
+
       - name: Tests
         run: pytest

@@ -69,6 +69,7 @@ from basis_core.domain import (
 from basis_gateway.api.operation_aware_schemas import OperationAwareEvaluateRequest
 from basis_gateway.auth.operation_producer import (
     OperationProducerTrust,
+    OperationProducerTrustSource,
     OperationProducerTrustStatus,
 )
 from basis_gateway.auth.subject_mapper import IdentityContext, NormalizedSubject
@@ -344,12 +345,49 @@ def compose_operation_aware_input(
             "subject."
         )
     if producer_trust.status is OperationProducerTrustStatus.TRUSTED:
-        if producer_trust.operation_producer_subject_id != subject.subject_id:
+        # Mechanism-aware (Phase 1B.3): the legacy bearer-subject-allowlist
+        # path and the mTLS-certificate path establish trust through two
+        # independent facts and must not be checked against the same
+        # invariant. See OperationProducerTrust's own docstring
+        # (auth/operation_producer.py) and ADR-0008's "Producer vs.
+        # authorization subject".
+        if producer_trust.source is OperationProducerTrustSource.CONFIGURED_SUBJECT_ID_ALLOWLIST:
+            # Legacy mechanism, unchanged: a trusted result must carry the
+            # bearer subject's own id as the producer subject id — this is
+            # the pre-Phase-1B.3 invariant, byte-for-byte unchanged.
+            if producer_trust.operation_producer_subject_id != subject.subject_id:
+                raise CompositionInternalError(
+                    "producer_trust.status is TRUSTED (source="
+                    f"{producer_trust.source.value!r}) but operation_producer_subject_id "
+                    f"({producer_trust.operation_producer_subject_id!r}) does not match "
+                    f"subject.subject_id ({subject.subject_id!r})."
+                )
+        elif producer_trust.source is OperationProducerTrustSource.MTLS_ADMITTED_URI_SAN:
+            # mTLS mechanism (Phase 1B.3): trust was established by an
+            # admitted certificate-derived URI SAN, never by a bearer
+            # subject id — operation_producer_subject_id must stay None
+            # (the mTLS producer identity is never a subject id), and the
+            # derived URI SAN must be present.
+            if producer_trust.operation_producer_subject_id is not None:
+                raise CompositionInternalError(
+                    "producer_trust.status is TRUSTED via MTLS_ADMITTED_URI_SAN but "
+                    "operation_producer_subject_id is not None "
+                    f"({producer_trust.operation_producer_subject_id!r}); an mTLS-trusted "
+                    "producer must never carry a bearer subject id as its producer "
+                    "identity — ADR-0008 'Producer vs. authorization subject'."
+                )
+            if not producer_trust.producer_workload_identity:
+                raise CompositionInternalError(
+                    "producer_trust.status is TRUSTED via MTLS_ADMITTED_URI_SAN but "
+                    "producer_workload_identity is empty/None; an admitted mTLS producer "
+                    "must always carry its derived URI SAN."
+                )
+        else:
             raise CompositionInternalError(
-                "producer_trust.status is TRUSTED but "
-                f"operation_producer_subject_id "
-                f"({producer_trust.operation_producer_subject_id!r}) does not match "
-                f"subject.subject_id ({subject.subject_id!r})."
+                "producer_trust.status is TRUSTED but source "
+                f"({producer_trust.source.value!r}) is not a recognized trusted "
+                "source; this is a gateway-internal programming error, never "
+                "caller-triggered."
             )
     elif producer_trust.operation_producer_subject_id is not None:
         raise CompositionInternalError(

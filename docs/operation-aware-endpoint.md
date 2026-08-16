@@ -70,11 +70,12 @@ These may be supplied by any authenticated caller, regardless of operation-produ
 ### Trusted-producer-only fields
 
 Every field below may be supplied **only** by a caller the gateway has classified as a trusted
-operation producer (`OPERATION_PRODUCER_SUBJECT_IDS`; see
-[Producer-only context](#producer-only-context) below). An ordinary authenticated caller that is
-not so classified and supplies any of these fields is rejected with `400` before the kernel is
-ever invoked. All are optional; the gateway never derives or composes them — each is either
-present exactly as the trusted producer supplied it, or absent.
+operation producer — see [Producer-only context](#producer-only-context) below for the two,
+mutually exclusive mechanisms that establish that classification
+(`OPERATION_PRODUCER_SUBJECT_IDS` or an admitted mTLS producer certificate). An ordinary
+authenticated caller that is not so classified and supplies any of these fields is rejected with
+`400` before the kernel is ever invoked. All are optional; the gateway never derives or composes
+them — each is either present exactly as the trusted producer supplied it, or absent.
 
 | Field | Type |
 |---|---|
@@ -162,10 +163,22 @@ identity_evidence_reference
 adapter_evidence_reference
 ```
 
-Trusted-producer status is derived **only** from `OPERATION_PRODUCER_SUBJECT_IDS`, checked
-against the already-authenticated subject's verified `subject_id` — exact match, case-sensitive.
-No role, attribute, network source, or caller-supplied claim widens this. See
-[`docs/configuration.md`](configuration.md#operation-aware-authorization).
+Trusted-producer status is derived by exactly one of two mutually exclusive mechanisms, selected by
+`OPERATION_PRODUCER_MTLS_TRUSTED_PROXY_ENABLED` (default `false`):
+
+- **Legacy mode** (the default): `OPERATION_PRODUCER_SUBJECT_IDS`, checked against the already
+  bearer-authenticated subject's verified `subject_id` — exact match, case-sensitive.
+- **Trusted-proxy mTLS mode**: an authenticated producer client certificate (validated by the
+  trusted NGINX ingress, [ADR-0009](https://github.com/basis-foundation/basis-architecture/blob/main/docs/adr/0009-trusted-producer-mtls-ingress-and-gateway-certificate-handoff.md))
+  yielding exactly one URI SAN, checked against `OPERATION_PRODUCER_MTLS_ADMITTED_URIS` — exact
+  match, case-sensitive. This is an independently authenticated producer *workload* identity, never
+  derived from, or substituted for, the bearer-authenticated subject `basis-core` evaluates. When
+  this mode is enabled, `OPERATION_PRODUCER_SUBJECT_IDS` is never consulted for that request — there
+  is no fallback between the two mechanisms.
+
+Neither mechanism is widened by role, attribute, network source, or any other caller-supplied
+claim. See [`docs/configuration.md`](configuration.md#operation-aware-authorization) and
+[`docs/implementation/producer-mtls-phase-1b3.md`](implementation/producer-mtls-phase-1b3.md).
 
 **Every field a trusted producer supplies is classified as `trusted_producer_asserted` in
 gateway-owned provenance — never promoted to `verified`.** The gateway cannot independently

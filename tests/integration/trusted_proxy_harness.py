@@ -137,15 +137,38 @@ class TrustedProxyTopologyPaths:
 
 
 class TrustedProxyBackend:
-    """Launches ``trusted_proxy_app:app`` under a real Uvicorn subprocess,
-    bound only to a Unix domain socket. No TCP application listener is
-    opened in this topology (ADR-0009 §9) -- this is the property the
-    direct-backend-bypass test (Step 11) verifies.
+    """Launches an ASGI app (``trusted_proxy_app:app`` by default) under a
+    real Uvicorn subprocess, bound only to a Unix domain socket. No TCP
+    application listener is opened in this topology (ADR-0009 §9) -- this
+    is the property the direct-backend-bypass test (Step 11) verifies.
+
+    Phase 1B.3 (``tests/integration/test_producer_mtls_live_gateway.py``)
+    reuses this exact class, unmodified in behavior for its default
+    arguments, to instead launch a thin test-only ASGI passthrough
+    (``app_module="live_gateway_request_log_app:app"``, see
+    ``tests/integration/live_gateway_request_log_app.py``) that records the
+    same method+path request log this class's default ``trusted_proxy_app``
+    does, then delegates unchanged to the real ``basis_gateway.main:app`` --
+    which has, and must have, no such logging facility of its own. Phase
+    1B.3 also passes the additional environment variables that application's
+    own ``GatewayConfig`` requires via *extra_env*, additive on top of
+    ``BASIS_TEST_REQUEST_LOG_PATH`` and ``PYTHONPATH``, never replacing them.
     """
 
-    def __init__(self, socket_path: Path, request_log_path: Path) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        request_log_path: Path,
+        *,
+        app_module: str = "trusted_proxy_app:app",
+        extra_env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> None:
         self._socket_path = socket_path
         self._request_log_path = request_log_path
+        self._app_module = app_module
+        self._extra_env = dict(extra_env) if extra_env else {}
+        self._cwd = cwd if cwd is not None else _HARNESS_DIR
         self._process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
@@ -156,16 +179,26 @@ class TrustedProxyBackend:
         env = dict(os.environ)
         env["BASIS_TEST_REQUEST_LOG_PATH"] = str(self._request_log_path)
         existing_pythonpath = env.get("PYTHONPATH", "")
+        # Always include both the real package's ``src`` directory and this
+        # harness's own directory (``tests/integration``) on PYTHONPATH,
+        # regardless of *cwd* -- so an *app_module* string can name either a
+        # ``src`` package (e.g. ``basis_gateway.main:app``) or a test-only
+        # harness module colocated with this file (e.g. Phase 1B.3's
+        # ``live_gateway_request_log_app:app``) without the caller having to
+        # choose *cwd* to make one or the other importable.
         repo_src = str(_REPO_SRC)
-        env["PYTHONPATH"] = (
-            f"{repo_src}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else repo_src
-        )
+        harness_dir = str(_HARNESS_DIR)
+        path_entries = [repo_src, harness_dir]
+        if existing_pythonpath:
+            path_entries.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(path_entries)
+        env.update(self._extra_env)
 
         cmd = [
             sys.executable,
             "-m",
             "uvicorn",
-            "trusted_proxy_app:app",
+            self._app_module,
             "--uds",
             str(self._socket_path),
             "--log-level",
@@ -173,7 +206,7 @@ class TrustedProxyBackend:
         ]
         self._process = subprocess.Popen(  # noqa: S603
             cmd,
-            cwd=str(_HARNESS_DIR),
+            cwd=str(self._cwd),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
