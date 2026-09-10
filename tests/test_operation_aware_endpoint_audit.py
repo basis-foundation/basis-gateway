@@ -574,6 +574,11 @@ def test_missing_audit_evidence_writes_no_completed_gateway_audit_event(
     # HTTP classification still follows the real (allow) response.
     assert resp.status_code == 200
 
+    # No authoritative AuditEvidence exists for this evaluation (audit_evidence
+    # is None) — the response must never fabricate, substitute, or derive a
+    # stand-in evidence_id. Absence stays truthful.
+    assert "evidence_id" not in resp.json()
+
     assert len(writer.events) == 1
     event = writer.events[0]
     assert event.action == EVIDENCE_MISSING

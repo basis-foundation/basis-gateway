@@ -223,8 +223,9 @@ class OperationAwareEvaluateResponse(BaseModel):
     Preserves the public kernel result — ``OperationAwareEnforcementResult``
     (``basis_gateway.core.operation_aware_evaluator.OperationAwareGatewayEvaluator
     .evaluate()``'s return value) — without reinterpretation. Every field
-    below is copied verbatim from ``result.response``/``result.disposition``;
-    none is recomputed, rewritten, or gateway-synthesized. See
+    below is copied verbatim from ``result.response``, ``result.disposition``,
+    or (``evidence_id`` only) ``result.audit_evidence``; none is recomputed,
+    rewritten, or gateway-synthesized. See
     ``from_result`` and
     ``docs/implementation/operation-aware-gateway-integration-plan.md`` §9
     ("Kernel Outcome Versus Gateway Disposition") for the invariants this
@@ -248,6 +249,19 @@ class OperationAwareEvaluateResponse(BaseModel):
     documents, or protocol payloads, and no gateway-authored explanation or
     invented reason code — ``explanation``/``reason_code`` are passed
     through only when the kernel itself populated them.
+
+    ``evidence_id`` is the authoritative kernel ``AuditEvidence.evidence_id``
+    produced by the same evaluation call (copied from
+    ``result.audit_evidence.evidence_id``) — never gateway-regenerated, never
+    derived from ``trace_id``/``correlation_id``/``request_id``. It is the
+    same identifier ``GatewayAuditEvent.audit_evidence_id`` references
+    (``assemble_gateway_audit_event``), so
+    ``response.evidence_id == audit_evidence.evidence_id ==
+    gateway_audit_event.audit_evidence_id`` for the same evaluation. Present
+    whenever ``result.audit_evidence`` is not ``None``; absent (never
+    fabricated or substituted) on the enforcement point's own internal-error
+    fallback path, where no trustworthy ``AuditEvidence`` could be assembled
+    (mirrors ``assemble_gateway_audit_event``'s own ``None`` handling).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -260,6 +274,7 @@ class OperationAwareEvaluateResponse(BaseModel):
     bundle_id: str | None = None
     bundle_version: str | None = None
     trace_id: str | None = None
+    evidence_id: str | None = None
     reason_code: str | None = None
     explanation: str | None = None
     disposition: str
@@ -276,9 +291,10 @@ class OperationAwareEvaluateResponse(BaseModel):
     def from_result(cls, result: OperationAwareEnforcementResult) -> OperationAwareEvaluateResponse:
         """Build the HTTP response body from a real ``OperationAwareEnforcementResult``.
 
-        Copies every field verbatim from ``result.response``/
-        ``result.disposition`` — no reinterpretation, no recomputation. See
-        this class's docstring for the invariants this preserves.
+        Copies every field verbatim from ``result.response``,
+        ``result.disposition``, or (``evidence_id`` only)
+        ``result.audit_evidence`` — no reinterpretation, no recomputation.
+        See this class's docstring for the invariants this preserves.
         """
         response = result.response
         evaluation_trace_dump: dict[str, Any] | None = None
@@ -296,6 +312,9 @@ class OperationAwareEvaluateResponse(BaseModel):
             bundle_id=response.bundle_id,
             bundle_version=response.bundle_version,
             trace_id=response.trace_id,
+            evidence_id=(
+                result.audit_evidence.evidence_id if result.audit_evidence is not None else None
+            ),
             reason_code=response.reason_code,
             explanation=response.explanation,
             disposition=result.disposition.value,

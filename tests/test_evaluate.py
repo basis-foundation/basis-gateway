@@ -40,6 +40,18 @@ def test_allow_response_body(evaluate_client):
     assert "reason" in data
 
 
+def test_legacy_response_shape_unaffected_by_operation_aware_evidence_id(evaluate_client):
+    """The operation-aware evidence-ID exposure is additive to
+    ``OperationAwareEvaluateResponse`` only. ``EvaluateResponse`` (this
+    endpoint's own response model) is a separate model with no ``evidence_id``
+    field, and this endpoint must never gain one as a side effect."""
+    resp = _evaluate(evaluate_client, actions.READ_SENSOR_TELEMETRY)
+    data = resp.json()
+    assert "evidence_id" not in data
+    allowed_keys = {"request_id", "outcome", "reason", "policy_version", "correlation_id"}
+    assert set(data.keys()) <= allowed_keys
+
+
 def test_deny_returns_403(evaluate_client, mock_verifier):
     mock_verifier._claims["realm_access"] = {"roles": ["viewer"]}
     resp = _evaluate(evaluate_client, actions.WRITE_HVAC_SETPOINT)

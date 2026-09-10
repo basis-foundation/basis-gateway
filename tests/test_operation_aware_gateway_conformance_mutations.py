@@ -32,6 +32,7 @@ from test_operation_aware_gateway_conformance import (
     assert_outcome_matches_expected,
     assert_request_ids_align,
     assert_response_and_evidence_agree,
+    assert_response_evidence_id_matches_audit_evidence,
     assert_subject_identity_agrees,
     build_known_good_artifacts,
     mutate,
@@ -181,6 +182,17 @@ def test_mutation_evidence_reference_mismatch_detected(allow_basic_artifacts) ->
         assert_gateway_and_kernel_agree(mutated)
 
 
+def test_mutation_response_evidence_id_diverges_from_audit_evidence_detected(
+    allow_basic_artifacts,
+) -> None:
+    """Proves the response's own ``evidence_id`` is checked against the
+    authoritative ``AuditEvidence``, not merely echoed back unverified — a
+    response carrying a separately-minted identifier must be detected."""
+    mutated = mutate(allow_basic_artifacts, "response", "evidence_id", value="separately-minted")
+    with pytest.raises(AssertionError):
+        assert_response_evidence_id_matches_audit_evidence(mutated)
+
+
 # ---------------------------------------------------------------------------
 # 7. Disposition / enforcement mismatch
 # ---------------------------------------------------------------------------
@@ -309,6 +321,7 @@ def test_mutation_pre_kernel_rejection_gains_fabricated_kernel_evidence_detected
         (("gw_event", "enforcement_action"), "deny"),
         (("evidence", "bundle_version"), "9.9.9"),
         (("gw_event", "audit_evidence_id"), "wrong-evidence-id"),
+        (("response", "evidence_id"), "separately-minted"),
     ],
     ids=[
         "request_id",
@@ -317,6 +330,7 @@ def test_mutation_pre_kernel_rejection_gains_fabricated_kernel_evidence_detected
         "enforcement_action",
         "bundle_version",
         "audit_evidence_id",
+        "response_evidence_id",
     ],
 )
 def test_mutation_full_aggregate_check_catches_every_single_field_tamper(

@@ -349,6 +349,20 @@ def assert_gateway_and_kernel_agree(artifacts: dict[str, Any]) -> None:
     )
 
 
+def assert_response_evidence_id_matches_audit_evidence(artifacts: dict[str, Any]) -> None:
+    """Proves the response never carries a separately minted identifier: the
+    HTTP response's own ``evidence_id`` must equal both the kernel
+    ``AuditEvidence.evidence_id`` and ``GatewayAuditEvent.audit_evidence_id``
+    for the same evaluation."""
+    response_evidence_id = artifacts["response"]["evidence_id"]
+    evidence_id = artifacts["evidence"]["evidence_id"]
+    gw_evidence_ref = artifacts["gw_event"]["audit_evidence_id"]
+    assert response_evidence_id == evidence_id == gw_evidence_ref, (
+        f"evidence_id mismatch: response={response_evidence_id!r} "
+        f"AuditEvidence={evidence_id!r} GatewayAuditEvent.audit_evidence_id={gw_evidence_ref!r}"
+    )
+
+
 def assert_response_and_evidence_agree(artifacts: dict[str, Any]) -> None:
     response = artifacts["response"]
     gw_event = artifacts["gw_event"]
@@ -488,6 +502,7 @@ def assert_full_cross_artifact_agreement(artifacts: dict[str, Any]) -> None:
     """
     assert_request_ids_align(artifacts)
     assert_gateway_and_kernel_agree(artifacts)
+    assert_response_evidence_id_matches_audit_evidence(artifacts)
     assert_response_and_evidence_agree(artifacts)
     assert_disposition_matches_enforcement(artifacts)
     assert_bundle_provenance_agrees(artifacts)
@@ -546,6 +561,11 @@ def test_canonical_allow_basic(
     assert body["evaluation_status"] == "completed"
     assert body["outcome"] == "allow"
     assert body["disposition"] == EnforcementDisposition.ALLOW.value
+    # Deterministic, injected trace/evidence factories prove the two
+    # identifiers are independently generated and independently routed —
+    # not derived from one another.
+    assert body["trace_id"] == "trace-allow-basic"
+    assert body["evidence_id"] == "evidence-allow-basic"
 
     artifacts = capture_artifacts(resp, writer, known_subject_id="user1")
     assert_full_cross_artifact_agreement(artifacts)
