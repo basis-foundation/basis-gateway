@@ -204,6 +204,7 @@ from the JSON body (the gateway serializes with `exclude_none=True`).
 | `bundle_id` | `string \| null` | When available | Identity of the loaded `PolicyBundle`. |
 | `bundle_version` | `string \| null` | When available | |
 | `trace_id` | `string \| null` | When available | Gateway-generated per evaluation call. |
+| `evidence_id` | `string \| null` | When available | See [Evidence ID](#evidence-id) below. |
 | `reason_code` | `string \| null` | When the kernel populated one | Never gateway-synthesized. |
 | `explanation` | `string \| null` | When the kernel populated one | Never gateway-synthesized prose. |
 | `disposition` | `string` (`"allow"` \| `"deny"`) | Yes | Kernel-computed, never gateway-recomputed. |
@@ -211,6 +212,35 @@ from the JSON body (the gateway serializes with `exclude_none=True`).
 
 Every value is copied verbatim from the kernel's `OperationAwareEnforcementResult` — none is
 recomputed, reinterpreted, or gateway-synthesized.
+
+### Evidence ID
+
+`evidence_id` is the identifier of the authoritative kernel `AuditEvidence` record produced for
+this evaluation (`AuditEvidence.evidence_id` — see [`docs/audit-model.md`](audit-model.md)). It is
+minted once, by the gateway, per evaluation call, and is embedded into that call's `AuditEvidence`
+by `basis-core` — the gateway never mints a second value for the response, never derives it from
+`trace_id`/`correlation_id`/`request_id`, and never substitutes a placeholder. It is the same
+identifier `GatewayAuditEvent.audit_evidence_id` references, so `response.evidence_id`,
+`AuditEvidence.evidence_id`, and `GatewayAuditEvent.audit_evidence_id` always agree for the same
+evaluation.
+
+`evidence_id` is distinct from `trace_id`: `trace_id` identifies the `EvaluationTrace` that
+explains *why* a decision was reached; `evidence_id` identifies the durable `AuditEvidence` record
+of *what* was decided and enforced. The two are independently generated and never derived from one
+another.
+
+`evidence_id` is present whenever the kernel produced trustworthy `AuditEvidence` for the call —
+which includes every governed outcome and every governed evaluation failure (`invalid_policy_bundle`,
+`policy_validation_failure`, `condition_evaluation_error`, and so on). It is absent only on the
+enforcement point's own internal-error fallback path (an unexpected exception during evaluation,
+always reported as `failure_reason: "internal_evaluation_error"`), where no trustworthy
+`AuditEvidence` could be assembled — the same case in which no `GatewayAuditEvent` is written
+either (see [`docs/audit-model.md`](audit-model.md)).
+
+Exposing `evidence_id` provides **correlation only**: it lets a caller (for example, an
+operation-producer role composing an authorization-to-execution binding record) reference the
+authoritative evidence for this evaluation. It is not itself proof that any downstream protocol
+operation was executed, and it does not implement or participate in execution.
 
 ---
 
@@ -279,6 +309,7 @@ curl -X POST http://localhost:8000/v1/evaluate/operation-aware \
   "bundle_id": "site-a-bundle",
   "bundle_version": "1.0.0",
   "trace_id": "b1e2f3a4-0000-0000-0000-000000000000",
+  "evidence_id": "d4c5b6a7-0000-0000-0000-000000000000",
   "disposition": "allow"
 }
 ```
@@ -302,6 +333,7 @@ Request body, against a bundle with a `deny` rule matching `write:ahu`:
   "bundle_id": "site-a-bundle",
   "bundle_version": "1.0.0",
   "trace_id": "b1e2f3a4-0000-0000-0000-000000000001",
+  "evidence_id": "d4c5b6a7-0000-0000-0000-000000000001",
   "disposition": "deny"
 }
 ```
@@ -327,6 +359,7 @@ kernel's matched-rule audit evidence, not in this response body.
   "bundle_id": "site-a-bundle",
   "bundle_version": "1.0.0",
   "trace_id": "b1e2f3a4-0000-0000-0000-000000000002",
+  "evidence_id": "d4c5b6a7-0000-0000-0000-000000000002",
   "disposition": "deny"
 }
 ```
@@ -351,6 +384,7 @@ status is the same `403` as an explicit or default deny:
   "bundle_id": "site-a-bundle",
   "bundle_version": "1.0.0",
   "trace_id": "b1e2f3a4-0000-0000-0000-000000000003",
+  "evidence_id": "d4c5b6a7-0000-0000-0000-000000000003",
   "disposition": "deny"
 }
 ```
@@ -368,9 +402,20 @@ matrix above).
   "correlation_id": "c9d8e7f6-0000-0000-0000-000000000004",
   "evaluation_status": "failed",
   "failure_reason": "policy_validation_failure",
+  "bundle_id": "site-a-bundle",
+  "bundle_version": "1.0.0",
+  "trace_id": "b1e2f3a4-0000-0000-0000-000000000004",
+  "evidence_id": "d4c5b6a7-0000-0000-0000-000000000004",
   "disposition": "deny"
 }
 ```
+
+This is a *governed* evaluator failure — the engine still identified the loaded bundle and
+produced a trustworthy `EvaluationTrace`/`AuditEvidence` pair before determining the policy failed
+validation, so `bundle_id`, `bundle_version`, `trace_id`, and `evidence_id` are all present, exactly
+as for a completed evaluation. This is distinct from the enforcement point's own internal-error
+fallback (`failure_reason: "internal_evaluation_error"`), where no `AuditEvidence` exists and
+`evidence_id` is correspondingly absent (see [Evidence ID](#evidence-id) above).
 
 ### Untrusted-producer context rejected
 
